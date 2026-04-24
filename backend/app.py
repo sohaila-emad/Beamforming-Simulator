@@ -210,6 +210,19 @@ def fiveg_tower_update():
     return jsonify(_fiveg.get_state())
 
 
+@app.route("/api/5g/tower/move", methods=["POST"])
+def fiveg_move_tower():
+    data = request.json or {}
+    tower_id = data.get("tower_id")
+    x = data.get("x")
+    y = data.get("y")
+    if tower_id and x is not None and y is not None and tower_id in _fiveg.towers:
+        _fiveg.towers[tower_id].x = float(x)
+        _fiveg.towers[tower_id].y = float(y)
+        _fiveg._update_all_beams()
+    return jsonify(_fiveg.get_state())
+
+
 @app.route("/api/5g/reset", methods=["POST"])
 def fiveg_reset():
     global _fiveg

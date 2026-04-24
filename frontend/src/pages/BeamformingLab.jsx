@@ -143,17 +143,17 @@ function drawLiveField(canvas, p, waveT) {
     const steerDelay=(ep.x*Math.sin(steer)+(ep.y||0)*Math.cos(steer))/lambda;
     const w=weights[n];
 
-    for (let ring=0; ring<4; ring++) {
-      const phase=((waveT - steerDelay*0.35 + ring*0.25) % 1 + 1) % 1;
-      const ringR=phase*Math.min(W,H)*0.72;
+    for (let ring=0; ring<6; ring++) {
+      const phase=((waveT - steerDelay*0.35 + ring/6) % 1 + 1) % 1;
+      const ringR=phase*Math.min(W,H)*0.76;
       if (ringR<2) continue;
-      const alpha=w*(1-phase)*0.52;
+      const alpha=w*(1-phase)*0.58;
       ctx.beginPath();
       p.layout==="circular"
         ? ctx.arc(ex,ey,ringR,0,2*Math.PI)
         : ctx.arc(ex,ey,ringR,Math.PI,2*Math.PI);
       ctx.strokeStyle=`rgba(0,212,255,${alpha.toFixed(3)})`;
-      ctx.lineWidth=0.9; ctx.stroke();
+      ctx.lineWidth=1.1; ctx.stroke();
     }
 
     // Element dot

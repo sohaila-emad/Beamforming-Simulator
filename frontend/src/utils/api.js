@@ -26,6 +26,7 @@ export const api = {
   // 5G
   fivegState: () => get("/5g/state"),
   fivegMoveUser: (user_id, x, y) => post("/5g/user/move", { user_id, x, y }),
+  fivegMoveTower: (tower_id, x, y) => post("/5g/tower/move", { tower_id, x, y }),
   fivegTowerBeam: (tower_id) => get("/5g/tower/beam", { tower_id }),
   fivegUpdateTower: (data) => post("/5g/tower/update", data),
   fivegReset: () => post("/5g/reset", {}),
