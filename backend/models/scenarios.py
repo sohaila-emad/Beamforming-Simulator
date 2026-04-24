@@ -72,7 +72,8 @@ class FiveGScenario:
             self._update_all_beams()
 
     def _update_all_beams(self):
-        """Recalculate beam directions and connectivity for all towers."""
+        """Recalculate beam directions and connectivity for all towers.
+        A tower can serve multiple users simultaneously."""
         for tower in self.towers.values():
             tower.connected_users = []
 
@@ -91,13 +92,19 @@ class FiveGScenario:
                 user.connected_tower = best_tower.id
                 user.signal_strength = best_rssi
                 best_tower.connected_users.append(user.id)
-                # Steer toward user
-                dx = user.x - best_tower.x
-                dy = user.y - best_tower.y
-                best_tower.beam_direction = np.degrees(np.arctan2(dx, dy))
             else:
                 user.connected_tower = None
                 user.signal_strength = -999
+
+        # Steer each tower: single user -> toward user; multiple -> toward centroid
+        for tower in self.towers.values():
+            if len(tower.connected_users) == 1:
+                u = self.users[tower.connected_users[0]]
+                tower.beam_direction = float(np.degrees(np.arctan2(u.x - tower.x, u.y - tower.y)))
+            elif len(tower.connected_users) > 1:
+                cx = float(np.mean([self.users[uid].x for uid in tower.connected_users]))
+                cy = float(np.mean([self.users[uid].y for uid in tower.connected_users]))
+                tower.beam_direction = float(np.degrees(np.arctan2(cx - tower.x, cy - tower.y)))
 
     def _compute_rssi(self, tower: Tower, distance: float) -> float:
         """Free space path loss model."""
@@ -120,7 +127,13 @@ class FiveGScenario:
         calc = BeamformingCalculator(params)
         theta = np.linspace(-90, 90, 361)
         theta_rad, af_db = calc.compute_array_factor(theta)
-        return {"theta": theta_rad.tolist(), "af_db": af_db.tolist()}
+        return {
+            "theta_deg": theta.tolist(),
+            "theta_rad": theta_rad.tolist(),
+            "af_db": af_db.tolist(),
+            "beam_direction": tower.beam_direction,
+            "connected_users": tower.connected_users,
+        }
 
     def get_state(self) -> dict:
         self._update_all_beams()
