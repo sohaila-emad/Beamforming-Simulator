@@ -92,7 +92,7 @@ export default function ControlPanel({ params, onChange, onCompute, loading }) {
           min={-90} max={90} step={1} unit="°" onChange={set("beam_direction")} />
 
         <Slider label="SNR" value={params.snr_db}
-          min={0} max={60} step={1} unit=" dB" onChange={set("snr_db")} />
+          min={0} max={1000} step={1} unit=" dB" onChange={set("snr_db")} />
       </div>
 
       {/* Apodization */}

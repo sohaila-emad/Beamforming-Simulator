@@ -269,7 +269,7 @@ export default function RadarPage() {
             onChange={(v) => { setScanSpeed(v); updateSettings({ scan_speed: v }); }} />
           <Slider label="Beam Width (°)" value={beamWidth} min={1} max={30} step={1}
             onChange={(v) => { setBeamWidth(v); updateSettings({ beam_width: v }); }} />
-          <Slider label="SNR (dB)" value={snrDb} min={0} max={40} step={1}
+          <Slider label="SNR (dB)" value={snrDb} min={0} max={1000} step={1}
             onChange={(v) => { setSnrDb(v); updateSettings({ snr_db: v }); }} />
 
           <div className="info-card" style={{ fontSize: 10 }}>
