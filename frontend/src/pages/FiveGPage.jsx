@@ -50,21 +50,33 @@ function draw5G(canvas, state, beamProfiles, dragHighlight) {
     ctx.fillStyle = grad; ctx.fill();
   });
 
-  // Beam lines to connected users
+  // Beam lines — one per (tower, user) pair, dual-user gets dashed style + badge
   Object.values(users).forEach((u) => {
     if (!u.connected_tower) return;
     const tower = towers[u.connected_tower]; if (!tower) return;
     const { cx: tx, cy: ty } = toCanvas(tower.x, tower.y);
     const { cx: ux, cy: uy } = toCanvas(u.x, u.y);
-    const col = TOWER_COLORS[tower.id] || "#00d4ff";
+    const tCol = TOWER_COLORS[tower.id] || "#00d4ff";
+    const uCol = USER_COLORS[u.id] || "#fff";
+    const isDual = (tower.connected_users?.length || 0) > 1;
     const grad = ctx.createLinearGradient(tx, ty, ux, uy);
-    grad.addColorStop(0, col + "cc"); grad.addColorStop(1, (USER_COLORS[u.id] || "#fff") + "88");
+    grad.addColorStop(0, tCol + "cc"); grad.addColorStop(1, uCol + "88");
     ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(ux, uy);
-    ctx.strokeStyle = grad; ctx.lineWidth = 2;
-    ctx.shadowColor = col; ctx.shadowBlur = 8; ctx.stroke(); ctx.shadowBlur = 0;
+    if (isDual) ctx.setLineDash([8, 4]);
+    ctx.strokeStyle = grad; ctx.lineWidth = isDual ? 1.5 : 2;
+    ctx.shadowColor = tCol; ctx.shadowBlur = isDual ? 4 : 8; ctx.stroke();
+    ctx.shadowBlur = 0; ctx.setLineDash([]);
     const mx = (tx + ux) / 2, my = (ty + uy) / 2;
-    ctx.fillStyle = col + "cc"; ctx.font = "9px Space Mono, monospace";
+    ctx.fillStyle = uCol + "cc"; ctx.font = "9px Space Mono, monospace";
     ctx.fillText(`${u.signal_strength?.toFixed(0)} dBm`, mx + 4, my - 4);
+  });
+  // Dual-user badge
+  Object.values(towers).forEach((t) => {
+    if ((t.connected_users?.length || 0) < 2) return;
+    const { cx, cy } = toCanvas(t.x, t.y);
+    ctx.fillStyle = "#ffb800"; ctx.font = "bold 9px Space Mono, monospace"; ctx.textAlign = "center";
+    ctx.fillText(`⇄ ${t.connected_users.length} users`, cx, cy - 24);
+    ctx.textAlign = "left";
   });
 
   // Towers
@@ -143,9 +155,11 @@ export default function FiveGPage() {
   const [dragging, setDragging] = useState(null);
   const [dragHighlight, setDragHighlight] = useState(null);
   const [editingTower, setEditingTower] = useState(null);
+  const [flashingTowers, setFlashingTowers] = useState({});
   const canvasRef = useRef(null);
   const miniRefs = { t1: useRef(null), t2: useRef(null), t3: useRef(null) };
   const stateRef = useRef(null);
+  const prevBeamDirsRef = useRef({});
 
   const refreshProfiles = useCallback(async (data) => {
     const profiles = {};
@@ -153,6 +167,20 @@ export default function FiveGPage() {
       profiles[tid] = await api.fivegTowerBeam(tid);
     }
     setBeamProfiles(profiles);
+    // Detect beam direction changes and flash those towers
+    const changed = [];
+    Object.values(data.towers).forEach(t => {
+      const prev = prevBeamDirsRef.current[t.id];
+      if (prev !== undefined && Math.abs(prev - t.beam_direction) > 0.5) changed.push(t.id);
+      prevBeamDirsRef.current[t.id] = t.beam_direction;
+    });
+    if (changed.length > 0) {
+      setFlashingTowers(f => {
+        const next = { ...f };
+        changed.forEach(tid => { next[tid] = Date.now(); });
+        return next;
+      });
+    }
   }, []);
 
   const fetchState = useCallback(async () => {
@@ -321,11 +349,14 @@ export default function FiveGPage() {
 
       {/* Right panel - tower controls */}
       <div className="sidebar" style={{ borderLeft: "1px solid var(--border)", borderRight: "none" }}>
-        {state && Object.values(state.towers).map((tower) => (
+        {state && Object.values(state.towers).map((tower) => {
+          const isFlashing = flashingTowers[tower.id] && (Date.now() - flashingTowers[tower.id]) < 1200;
+          return (
           <div className="panel-section" key={tower.id}
             style={{ border: editingTower === tower.id ? `1px solid ${TOWER_COLORS[tower.id]}44` : undefined }}>
-            <div className="panel-title" style={{ color: TOWER_COLORS[tower.id], display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>▲ Tower {tower.id.toUpperCase()}</span>
+            <div className="panel-title" style={{ color: TOWER_COLORS[tower.id], display: "flex", justifyContent: "space-between", alignItems: "center",
+              background: isFlashing ? TOWER_COLORS[tower.id] + "22" : undefined, transition: "background 0.3s", borderRadius: 3, padding: "2px 4px" }}>
+              <span>▲ Tower {tower.id.toUpperCase()} {isFlashing ? "⟳" : ""}</span>
               <button className="btn" style={{ padding: "1px 7px", fontSize: 9 }}
                 onClick={() => setEditingTower(editingTower === tower.id ? null : tower.id)}>
                 {editingTower === tower.id ? "▲" : "✎"}
@@ -357,13 +388,18 @@ export default function FiveGPage() {
                 <Slider label="Elements" value={tower.num_elements}
                   min={4} max={128} step={4}
                   onChange={(v) => updateTower(tower.id, "num_elements", v)} />
+                <Slider label="Frequency (GHz)" value={tower.frequency / 1e9}
+                  min={0.7} max={28} step={0.1}
+                  fmt={v => v.toFixed(1) + " GHz"}
+                  onChange={(v) => updateTower(tower.id, "frequency", v * 1e9)} />
                 <div style={{ fontSize: 9, color: "var(--accent3)", fontFamily: "var(--font-mono)", marginTop: 4 }}>
                   ✓ changes applied live
                 </div>
               </div>
             )}
           </div>
-        ))}
+        );
+        })}
 
         <div className="panel-section">
           <div className="panel-title">Controls</div>
