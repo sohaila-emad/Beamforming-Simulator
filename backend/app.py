@@ -269,7 +269,7 @@ def bmode_scan():
     angle     = float(data.get("angle", 0))
     freq_mhz  = float(data.get("frequency_mhz", 5.0))
     num_lines = int(data.get("num_lines", 64))
-    fan_width = float(data.get("fan_width", 8.0))  # half-width in cm around probe_x
+    fan_width = float(data.get("fan_width", 8.0))
 
     x_left  = probe_x - fan_width
     x_right = probe_x + fan_width
@@ -279,7 +279,7 @@ def bmode_scan():
         result = _phantom.compute_amode(px, probe_y, angle, freq_mhz)
         bmode_lines.append({
             "x": float(px),
-            "echo": result["echo"],
+            "envelope": result["envelope"],   # use envelope for brightness
             "depth_cm": result["depth_cm"]
         })
 
@@ -361,4 +361,4 @@ def update_radar_settings():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True)

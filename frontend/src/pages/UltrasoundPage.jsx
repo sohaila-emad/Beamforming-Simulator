@@ -180,33 +180,86 @@ function drawAmode(canvas, data) {
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#030810"; ctx.fillRect(0, 0, W, H);
+
   if (!data || !data.echo) {
-    ctx.fillStyle = "rgba(90,133,170,0.35)"; ctx.font = "10px monospace"; ctx.textAlign = "center";
-    ctx.fillText("A-mode — move probe to scan", W / 2, H / 2); ctx.textAlign = "left"; return;
+    ctx.fillStyle = "rgba(90,133,170,0.35)"; ctx.font = "11px monospace"; ctx.textAlign = "center";
+    ctx.fillText("A-mode — move probe to scan", W / 2, H / 2);
+    ctx.textAlign = "left"; return;
   }
+
   const { echo, depth_cm } = data;
   const maxD = depth_cm[depth_cm.length - 1] || 20;
-  const maxE = Math.max(...echo.map(Math.abs), 1e-6);
-  const pL = 28, pB = 14, pT = 14, pw = W - pL - 6, ph = H - pB - pT;
-  [0, 5, 10, 15, 20].filter(d => d <= maxD).forEach(d => {
-    const x = pL + d / maxD * pw;
-    ctx.strokeStyle = "rgba(26,50,90,0.4)"; ctx.lineWidth = 0.5;
+  const pL = 32, pB = 18, pT = 24, pw = W - pL - 8, ph = H - pB - pT;
+
+  // Grid lines + depth labels
+  const depthMarks = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20].filter(d => d <= maxD);
+  depthMarks.forEach(d => {
+    const x = pL + (d / maxD) * pw;
+    ctx.strokeStyle = d === 0 ? "rgba(0,212,255,0.2)" : "rgba(26,50,90,0.35)";
+    ctx.lineWidth = d % 5 === 0 ? 1 : 0.5;
     ctx.beginPath(); ctx.moveTo(x, pT); ctx.lineTo(x, pT + ph); ctx.stroke();
-    ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "7px monospace"; ctx.textAlign = "center";
-    ctx.fillText(d + "cm", x, H - 3);
+    ctx.fillStyle = "rgba(90,133,170,0.6)"; ctx.font = "8px monospace"; ctx.textAlign = "center";
+    ctx.fillText(d + "cm", x, H - 4);
   });
-  ctx.beginPath(); ctx.moveTo(pL, pT + ph / 2); ctx.lineTo(pL + pw, pT + ph / 2);
-  ctx.strokeStyle = "rgba(30,60,100,0.4)"; ctx.stroke();
+
+  // Centre baseline
+  const midY = pT + ph / 2;
+  ctx.beginPath(); ctx.moveTo(pL, midY); ctx.lineTo(pL + pw, midY);
+  ctx.strokeStyle = "rgba(0,212,255,0.15)"; ctx.lineWidth = 1; ctx.stroke();
+
+  // Find peak for normalisation — use 99th percentile to avoid clipping
+  const sorted = [...echo.map(Math.abs)].sort((a, b) => a - b);
+  const peakE = sorted[Math.floor(sorted.length * 0.999)] || 1e-6;
+  const scale = (ph / 2 - 6) / peakE;
+
+  // --- Filled waveform (above + mirror below for classic A-mode look) --------
+  const gradient = ctx.createLinearGradient(0, pT, 0, pT + ph);
+  gradient.addColorStop(0,   "rgba(0,255,136,0.05)");
+  gradient.addColorStop(0.5, "rgba(0,255,136,0.55)");
+  gradient.addColorStop(1,   "rgba(0,255,136,0.05)");
+
+  // Build path for fill (mirror both sides)
+  ctx.beginPath();
+  ctx.moveTo(pL, midY);
+  for (let i = 0; i < echo.length; i++) {
+    const x = pL + (depth_cm[i] / maxD) * pw;
+    const y = midY - echo[i] * scale;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  // Trace back mirrored
+  for (let i = echo.length - 1; i >= 0; i--) {
+    const x = pL + (depth_cm[i] / maxD) * pw;
+    const y = midY + echo[i] * scale;
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = gradient; ctx.fill();
+
+  // --- Bright stroke line on top ------------------------------------------
   ctx.beginPath();
   for (let i = 0; i < echo.length; i++) {
-    const x = pL + depth_cm[i] / maxD * pw;
-    const y = pT + ph / 2 - (echo[i] / maxE) * (ph / 2 - 4);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    const x = pL + (depth_cm[i] / maxD) * pw;
+    const y = midY - echo[i] * scale;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
-  ctx.strokeStyle = "#00ff88"; ctx.lineWidth = 1.5;
-  ctx.shadowColor = "#00ff88"; ctx.shadowBlur = 4; ctx.stroke(); ctx.shadowBlur = 0;
-  ctx.textAlign = "left"; ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "9px monospace";
-  ctx.fillText("A-MODE  echo amplitude vs depth", pL + 4, pT + 10);
+  ctx.strokeStyle = "#00ff88"; ctx.lineWidth = 1.2;
+  ctx.shadowColor = "#00ff88"; ctx.shadowBlur = 5;
+  ctx.stroke(); ctx.shadowBlur = 0;
+
+  // Mirror stroke (dimmer)
+  ctx.beginPath();
+  for (let i = 0; i < echo.length; i++) {
+    const x = pL + (depth_cm[i] / maxD) * pw;
+    const y = midY + echo[i] * scale;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = "rgba(0,255,136,0.35)"; ctx.lineWidth = 0.8; ctx.stroke();
+
+  // Labels
+  ctx.textAlign = "left"; ctx.fillStyle = "rgba(0,212,255,0.7)"; ctx.font = "bold 9px monospace";
+  ctx.fillText("A-MODE  RF echo vs depth", pL + 4, pT - 6);
+  ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "8px monospace";
+  ctx.fillText("↑ reflection", pL + 4, pT + 10);
 }
 
 // ─── B-mode draw ──────────────────────────────────────────────────────────────
@@ -216,48 +269,77 @@ function drawBmode(canvas, data) {
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-  if (!data || !data.lines) {
-    ctx.fillStyle = "rgba(90,133,170,0.35)"; ctx.font = "10px monospace"; ctx.textAlign = "center";
-    ctx.fillText("Click  ▶ B-mode Scan  to build image", W / 2, H / 2); ctx.textAlign = "left"; return;
+
+  if (!data || !data.lines || data.lines.length === 0) {
+    ctx.fillStyle = "rgba(90,133,170,0.35)"; ctx.font = "11px monospace"; ctx.textAlign = "center";
+    ctx.fillText("B-mode live — move probe to update", W / 2, H / 2);
+    ctx.textAlign = "left"; return;
   }
+
   const { lines, x_range, probe_x } = data;
   const numLines = lines.length;
-  const lineW = W / numLines;
+  const lineW = Math.max(1, W / numLines);
+  const numDepth = lines[0].envelope ? lines[0].envelope.length : (lines[0].echo ? lines[0].echo.length : 0);
+  if (numDepth === 0) return;
+
   const imgData = ctx.createImageData(W, H);
-  const d = imgData.data;
+  const px = imgData.data;
+
   lines.forEach((line, li) => {
-    const px = Math.round(li * lineW);
-    const maxE = Math.max(...line.echo.map(Math.abs), 1e-6);
-    line.echo.forEach((v, si) => {
-      const py = Math.round(si / line.echo.length * H);
-      const brightness = Math.round(Math.min(255, Math.abs(v) / maxE * 255 * 3));
-      const lw = Math.ceil(lineW);
-      for (let dx2 = 0; dx2 < lw; dx2++) {
-        const idx2 = (py * W + Math.min(px + dx2, W - 1)) * 4;
-        if (idx2 + 3 < d.length) { d[idx2] = brightness; d[idx2+1] = brightness; d[idx2+2] = brightness; d[idx2+3] = 220; }
+    const samples = line.envelope || line.echo;
+    if (!samples) return;
+    const xStart = Math.round(li * lineW);
+    const xEnd   = Math.min(W, Math.round((li + 1) * lineW));
+
+    for (let si = 0; si < numDepth; si++) {
+      const py2 = Math.floor((si / numDepth) * H);
+      if (py2 >= H) continue;
+
+      const raw = Math.abs(samples[si]);
+      // Log compression — same as real US scanners
+      const logVal = Math.log1p(raw * 200) / Math.log1p(200);
+      // Gamma curve to boost mid-range (tissue texture)
+      const brightness = Math.round(Math.min(255, Math.pow(logVal, 0.55) * 255));
+
+      for (let xp = xStart; xp < xEnd; xp++) {
+        const idx = (py2 * W + xp) * 4;
+        if (idx + 3 >= px.length) continue;
+        px[idx]     = brightness;
+        px[idx + 1] = brightness;
+        px[idx + 2] = brightness;
+        px[idx + 3] = 255;
       }
-    });
+    }
   });
+
   ctx.putImageData(imgData, 0, 0);
+
+  // Depth scale on left edge
+  ctx.fillStyle = "rgba(0,212,255,0.5)"; ctx.font = "7px monospace"; ctx.textAlign = "right";
+  [0, 5, 10, 15, 20].forEach(d => {
+    const y = Math.round((d / 20) * H);
+    ctx.strokeStyle = "rgba(0,212,255,0.15)"; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(12, y); ctx.stroke();
+    ctx.fillText(d + "cm", 26, y + 4);
+  });
 
   // Probe-centre marker
   if (x_range && probe_x !== undefined) {
     const xSpan = x_range[1] - x_range[0];
-    const centreX = ((probe_x - x_range[0]) / xSpan) * W;
-    ctx.strokeStyle = "rgba(0,212,255,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
-    ctx.beginPath(); ctx.moveTo(centreX, 0); ctx.lineTo(centreX, H * 0.12); ctx.stroke();
+    const cX = ((probe_x - x_range[0]) / xSpan) * W;
+    ctx.strokeStyle = "rgba(0,212,255,0.7)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(cX, 0); ctx.lineTo(cX, H * 0.08); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = "#00d4ff"; ctx.font = "8px monospace"; ctx.textAlign = "center";
-    ctx.fillText(`probe @${probe_x.toFixed(1)}cm`, centreX, 22);
-
-    // X axis labels
-    ctx.fillStyle = "rgba(90,133,170,0.45)"; ctx.font = "7px monospace";
-    ctx.fillText(`${x_range[0].toFixed(1)}`, 2, H - 3);
-    ctx.fillText(`${x_range[1].toFixed(1)} cm`, W - 34, H - 3);
+    ctx.fillText(`▼ ${probe_x.toFixed(1)}cm`, cX, 18);
+    ctx.fillStyle = "rgba(90,133,170,0.4)";
+    ctx.fillText(`${x_range[0].toFixed(1)}`, 20, H - 5);
+    ctx.textAlign = "right";
+    ctx.fillText(`${x_range[1].toFixed(1)}cm`, W - 4, H - 5);
   }
 
-  ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "9px monospace"; ctx.textAlign = "left";
-  ctx.fillText("B-MODE  lateral scan image", 8, 14);
+  ctx.fillStyle = "rgba(0,212,255,0.65)"; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
+  ctx.fillText("B-MODE  grayscale scan", 30, 14);
 }
 
 // ─── Doppler draw ─────────────────────────────────────────────────────────────
@@ -381,7 +463,16 @@ export default function UltrasoundPage() {
     setAmodeData(data);
   }, [probe, freqMhz, probeToScanParams]);
 
-  useEffect(() => { const t = setTimeout(() => fetchAmode(), 150); return () => clearTimeout(t); }, [fetchAmode]);
+  const fetchBmode = useCallback(async (p = probe) => {
+    const { probe_x, probe_y, angle } = probeToScanParams(p);
+    const data = await api.bmodeScam({ probe_x, probe_y, angle, frequency_mhz: freqMhz, num_lines: 60, fan_width: 7 });
+    setBmodeData(data);
+  }, [probe, freqMhz, probeToScanParams]);
+
+  // A-mode: instant update on every probe move (backend is ~18ms, totally fine)
+  useEffect(() => { const t = setTimeout(() => fetchAmode(), 0); return () => clearTimeout(t); }, [fetchAmode]);
+  // B-mode: 400ms debounce — heavier call (60 lines), runs on separate thread
+  useEffect(() => { const t = setTimeout(() => fetchBmode(), 400); return () => clearTimeout(t); }, [fetchBmode]);
 
   // Doppler auto-update
   useEffect(() => {
@@ -448,9 +539,8 @@ export default function UltrasoundPage() {
   };
   const bmodeScan = async () => {
     setScanning(true);
-    const { probe_x, probe_y, angle } = probeToScanParams();
-    const data = await api.bmodeScam({ probe_x, probe_y, angle, frequency_mhz: freqMhz, num_lines: 80, fan_width: 7 });
-    setBmodeData(data); setScanning(false);
+    await fetchBmode();
+    setScanning(false);
   };
 
   const MODES = ["amode", "bmode", "doppler"];
