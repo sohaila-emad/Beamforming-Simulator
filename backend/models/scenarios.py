@@ -238,102 +238,145 @@ class SheppLoganPhantom:
                       beam_angle_deg: float, frequency_mhz: float = 5.0) -> dict:
         """
         Compute A-mode ultrasound scan along a beam line.
-        Returns RF echo + envelope signal with clear tissue-boundary spikes.
+
+        Physics:
+        - All coordinates are in cm throughout (no mixed normalisation).
+        - At each tissue boundary the pressure reflection coefficient is
+          R = (Z2 - Z1) / (Z2 + Z1)  (Rayleigh formula).
+        - Amplitude of the returned echo = |R| * exp(-alpha * f * depth)
+          where alpha is in dB/cm/MHz converted to Nepers/cm.
+        - A Gaussian pulse (sigma ~ axial resolution) is placed at each
+          interface depth — this gives the clean spike-per-boundary shape
+          seen on real A-mode oscilloscopes.
+        - Speckle is a small fraction of the *largest spike* so it never
+          dominates the display.
         """
-        SPEED_SOUND = 1540.0
-        max_depth_cm = 20.0
-        num_samples = 2000
+        max_depth_cm = 22.0          # generous — phantom is ±11 cm
+        num_samples   = 2000
         depth = np.linspace(0, max_depth_cm, num_samples)
+        cm_per_sample = max_depth_cm / num_samples
+
+        # Axial-resolution sigma: ~half a wavelength in samples
+        # λ = c / f,  sigma_cm ≈ 0.5 * λ  (typical -6 dB pulse width)
+        c_sound = 1540.0
+        lambda_cm = c_sound / (frequency_mhz * 1e6) * 100  # cm
+        sigma_cm = max(0.05, 0.5 * lambda_cm)              # at least 0.05 cm
+        sigma_samples = max(2, int(sigma_cm / cm_per_sample))
 
         angle_rad = np.radians(beam_angle_deg)
         beam_x = probe_x_cm + depth * np.sin(angle_rad)
-        beam_y = probe_y_cm - depth * np.cos(angle_rad)  # y increases downward
+        beam_y = probe_y_cm - depth * np.cos(angle_rad)  # canvas y increases down
 
-        # --- Build boundary-spike signal -----------------------------------
-        # For each sample, find which structure (if any) we're inside.
-        # At every interface crossing, emit a Gaussian spike whose amplitude
-        # is proportional to the reflection coefficient, attenuated by depth.
-
-        # Pre-compute structure membership along beam
-        in_struct = np.full(num_samples, -1, dtype=int)  # index into self.structures
-        for i, (bx, by) in enumerate(zip(beam_x, beam_y)):
-            nx = bx / (self.width_cm / 2)
-            ny = by / (self.height_cm / 2)
-            for si, struct in enumerate(self.structures):
-                cos_r = np.cos(np.radians(struct.rotation))
-                sin_r = np.sin(np.radians(struct.rotation))
-                ddx = (nx - struct.cx / 9.2) * cos_r + (ny - struct.cy / 11.0) * sin_r
-                ddy = -(nx - struct.cx / 9.2) * sin_r + (ny - struct.cy / 11.0) * cos_r
-                if (ddx / (struct.rx / 9.2)) ** 2 + (ddy / (struct.ry / 11.0)) ** 2 <= 1.0:
+        # ── STEP 1: classify each sample into a structure (all in cm) ─────
+        # The Shepp-Logan structures use cx, cy, rx, ry all in cm.
+        # We check: rotated_ellipse_test(bx - cx, by - cy, rx, ry, rotation) <= 1
+        in_struct = np.full(num_samples, -1, dtype=int)
+        for i in range(num_samples):
+            bx, by = beam_x[i], beam_y[i]
+            for si, s in enumerate(self.structures):
+                cos_r = np.cos(np.radians(s.rotation))
+                sin_r = np.sin(np.radians(s.rotation))
+                # Translate to structure centre, then un-rotate
+                dx = bx - s.cx
+                dy = by - s.cy
+                ddx = dx * cos_r + dy * sin_r
+                ddy = -dx * sin_r + dy * cos_r
+                # Normalise by semi-axes and test unit ellipse
+                if (ddx / s.rx) ** 2 + (ddy / s.ry) ** 2 <= 1.0:
                     in_struct[i] = si
-                    break
+                    break  # outermost match wins (structures sorted outer→inner)
 
-        # Find boundary crossings (transitions between struct IDs)
+        # ── STEP 2: accumulate attenuation sample-by-sample (in Np) ───────
+        # alpha_Np_per_cm = alpha_dB_per_cm_per_MHz * f_MHz / 8.686
+        atten_np = np.zeros(num_samples)   # cumulative Np at each sample
+        running = 0.0
+        for i in range(num_samples):
+            cid = in_struct[i]
+            if cid >= 0:
+                s = self.structures[cid]
+                running += (s.attenuation_db_cm * frequency_mhz / 8.686) * cm_per_sample
+            atten_np[i] = running
+
+        # ── STEP 3: detect boundary crossings and emit reflection spikes ──
         echo_spikes = np.zeros(num_samples)
-        cumulative_atten = 0.0
-        spike_sigma_samples = max(2, num_samples // 400)  # ~5 samples wide pulse
-
         prev_id = -1
-        prev_z = 1.0e6  # air impedance at skin
+        prev_z  = 343.0 * 1.2  # ~air impedance (Pa·s/m) — large contrast with skin
+        # Actually use a sensible air Z so the first skin spike is strong:
+        Z_AIR   = 413.0          # Pa·s/m  (ρ_air * c_air)
+        prev_z  = Z_AIR
+
+        boundaries = []   # (sample_index, amplitude) for later envelope use
 
         for i in range(num_samples):
             cur_id = in_struct[i]
-
-            # Accumulate attenuation inside tissue
-            if cur_id >= 0:
-                s = self.structures[cur_id]
-                cumulative_atten += s.attenuation_db_cm * (max_depth_cm / num_samples) * frequency_mhz / 8.686
-
             if cur_id != prev_id:
-                # Interface crossing — compute reflection coefficient
-                cur_z = self.structures[cur_id].acoustic_impedance if cur_id >= 0 else 1.0e6
-                dz = abs(cur_z - prev_z)
-                if dz > 5e3:  # only real boundaries
-                    rc = ((cur_z - prev_z) / (cur_z + prev_z)) ** 2  # power reflection
-                    # Boost RC to be clearly visible; apply depth attenuation
-                    amp = np.sqrt(rc) * 80.0 * np.exp(-cumulative_atten)
-                    # Write Gaussian pulse centred at i
-                    lo = max(0, i - spike_sigma_samples * 4)
-                    hi = min(num_samples, i + spike_sigma_samples * 4)
-                    for j in range(lo, hi):
-                        g = np.exp(-0.5 * ((j - i) / spike_sigma_samples) ** 2)
-                        echo_spikes[j] += amp * g
-
-                prev_z = cur_z if cur_id >= 0 else 1.0e6
+                cur_z = self.structures[cur_id].acoustic_impedance if cur_id >= 0 else Z_AIR
+                R = (cur_z - prev_z) / (cur_z + prev_z)   # pressure reflection coeff
+                if abs(R) > 1e-4:                          # skip negligible interfaces
+                    # Depth attenuation: two-way path → factor 2 in exponent
+                    amp = abs(R) * np.exp(-2.0 * atten_np[i])
+                    boundaries.append((i, amp, np.sign(R)))
+                prev_z = cur_z if cur_id >= 0 else Z_AIR
                 prev_id = cur_id
 
-        # --- Speckle texture (low-level scattering inside tissues) ----------
-        # Each tissue has characteristic scattering level
+        # Normalise amplitudes so the largest spike is 1.0
+        if boundaries:
+            max_amp = max(a for _, a, _ in boundaries)
+            if max_amp < 1e-12:
+                max_amp = 1.0
+        else:
+            max_amp = 1.0
+
+        for (idx, amp, sign) in boundaries:
+            norm_amp = amp / max_amp
+            lo = max(0, idx - sigma_samples * 5)
+            hi = min(num_samples, idx + sigma_samples * 5)
+            for j in range(lo, hi):
+                g = np.exp(-0.5 * ((j - idx) / sigma_samples) ** 2)
+                echo_spikes[j] += sign * norm_amp * g
+
+        # ── STEP 4: tissue speckle (Rayleigh-distributed scattering) ──────
+        # Keep speckle at ~5 % of peak so spikes always dominate.
         speckle = np.zeros(num_samples)
         for i in range(num_samples):
             cid = in_struct[i]
             if cid >= 0:
                 s = self.structures[cid]
-                # Scatter amplitude proportional to attenuation (denser tissue = more speckle)
-                lvl = s.attenuation_db_cm * 0.06 * np.exp(-cumulative_atten * 0.05)
-                speckle[i] = np.random.randn() * lvl
+                # Denser tissue (higher α) → more scatterers → more speckle
+                scatt_level = s.attenuation_db_cm * 0.025 * np.exp(-atten_np[i])
+                speckle[i] = np.random.randn() * scatt_level
 
-        # --- Combine, keep noise very small so spikes dominate -------------
-        noise = np.random.randn(num_samples) * 0.002
+        # ── STEP 5: combine — spikes >> speckle >> floor noise ────────────
+        noise_floor = 0.003
+        noise = np.random.randn(num_samples) * noise_floor
         rf = echo_spikes + speckle + noise
 
-        # --- Envelope detection (for B-mode brightness) --------------------
-        # Simple moving-average abs envelope
-        window = spike_sigma_samples * 3
-        kernel = np.ones(window) / window
-        envelope = np.convolve(np.abs(rf), kernel, mode='same')
-        # Normalise to 0-1
+        # ── STEP 6: Hilbert-envelope for B-mode ───────────────────────────
+        # Use scipy Hilbert if available, else fall back to moving-avg |rf|
+        try:
+            from scipy.signal import hilbert
+            analytic = hilbert(rf)
+            envelope = np.abs(analytic)
+        except Exception:
+            win = max(3, sigma_samples * 2)
+            kernel = np.ones(win) / win
+            envelope = np.convolve(np.abs(rf), kernel, mode='same')
+
+        # Normalise envelope to 0-1
         emax = envelope.max()
         if emax > 1e-9:
-            envelope /= emax
+            envelope = envelope / emax
+        else:
+            envelope = np.zeros_like(envelope)
 
         return {
-            "depth_cm": depth.tolist(),
-            "echo": rf.tolist(),            # RF signal for A-mode waveform
-            "envelope": envelope.tolist(),  # Envelope for B-mode brightness
-            "probe_x": probe_x_cm,
-            "probe_y": probe_y_cm,
+            "depth_cm":  depth.tolist(),
+            "echo":      rf.tolist(),        # RF signal  → A-mode waveform
+            "envelope":  envelope.tolist(),  # Hilbert envelope → B-mode brightness
+            "probe_x":   probe_x_cm,
+            "probe_y":   probe_y_cm,
             "angle_deg": beam_angle_deg,
+            "boundaries": [(depth[idx], amp / max_amp) for (idx, amp, _) in boundaries],
         }
 
 

@@ -400,22 +400,63 @@ function drawDoppler(canvas, data) {
 // ─── Doppler simulation ───────────────────────────────────────────────────────
 function simulateDoppler(probeAngle, probeEdge, vesselAngle, vesselVelocity, freqMhz, snrDb) {
   const c = 1540, fc = freqMhz * 1e6;
-  // Convert probe edge + angle to absolute beam angle
-  let probeAbsAngle = probeAngle;
-  if (probeEdge === "top")   probeAbsAngle = 180 + probeAngle;
-  if (probeEdge === "left")  probeAbsAngle = 90 + probeAngle;
-  if (probeEdge === "right") probeAbsAngle = 270 + probeAngle;
-  const theta = Math.abs(probeAbsAngle - vesselAngle) * Math.PI / 180;
-  const fd = 2 * (vesselVelocity / 100) * Math.cos(theta) * fc / c;
-  const N = 256, maxF = 5000;
+
+  // ── Convert probe to an absolute bearing in degrees (0° = up / north, CW positive)
+  // probeAngle is a tilt relative to the edge's inward normal.
+  // bottom edge: normal points up   (0°)
+  // top edge:    normal points down (180°)
+  // left edge:   normal points right (90°)
+  // right edge:  normal points left (270°)
+  let probeBearing = probeAngle; // bottom default: 0° + tilt
+  if (probeEdge === "top")   probeBearing = 180 + probeAngle;
+  if (probeEdge === "left")  probeBearing =  90 + probeAngle;
+  if (probeEdge === "right") probeBearing = 270 + probeAngle;
+
+  // ── Convert vessel angle to the same bearing convention.
+  // vessel.angle is 0-179 where 0° = rightward (standard math angle),
+  // so bearing = 90° - vessel.angle  (i.e. north-up, CW).
+  const vesselBearing = (90 - vesselAngle + 360) % 360;
+
+  // ── Angle between beam and vessel flow direction
+  let thetaDeg = Math.abs(probeBearing - vesselBearing);
+  if (thetaDeg > 180) thetaDeg = 360 - thetaDeg;
+  const theta = thetaDeg * Math.PI / 180;
+
+  // ── Doppler shift fd = 2·v·cos(θ)·f/c
+  // Sign: if beam and vessel point in roughly the same direction → negative fd (away)
+  //       if they oppose → positive fd (toward).
+  const dotSign = Math.cos(theta) >= 0 ? -1 : 1; // toward probe = positive convention
+  const fd = dotSign * 2 * (vesselVelocity / 100) * Math.abs(Math.cos(theta)) * fc / c;
+
+  const N = 512, maxF = 6000;
   const freqs = Array.from({ length: N }, (_, i) => -maxF + 2 * maxF * i / (N - 1));
-  const snrLin = Math.pow(10, snrDb / 10);
+  const snrLin = Math.pow(10, Math.min(snrDb, 60) / 10); // cap at 60 dB to keep noise visible
+
+  // Spectral width scales with velocity (turbulence broadening)
+  const sigma = 150 + vesselVelocity * 1.2;
+
   const spectrum = freqs.map(f => {
-    const sig = Math.exp(-0.5 * ((f - fd) / 280) ** 2);
-    const noise = (1 / snrLin) * Math.random() * 0.4;
+    const sig = Math.exp(-0.5 * ((f - fd) / sigma) ** 2);
+    // Noise floor inversely proportional to SNR
+    const noise = (1 / Math.sqrt(snrLin)) * Math.random() * 0.35;
     return Math.max(0, sig + noise);
   });
-  return { frequencies: freqs, spectrum, vessel_velocity: vesselVelocity, velocity_scale: maxF, wall_freq: 200, fd_hz: fd };
+
+  // Wall filter: clamp near-zero frequencies (high-pass, removes slow-moving tissue)
+  const wallHz = 80;
+  spectrum.forEach((_, i) => {
+    if (Math.abs(freqs[i]) < wallHz) spectrum[i] *= Math.abs(freqs[i]) / wallHz;
+  });
+
+  return {
+    frequencies: freqs,
+    spectrum,
+    vessel_velocity: vesselVelocity,
+    velocity_scale: maxF,
+    wall_freq: wallHz,
+    fd_hz: fd,
+    theta_deg: thetaDeg,
+  };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
