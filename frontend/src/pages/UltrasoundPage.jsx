@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { api } from "../utils/api";
 
 // ─── Phantom draw ─────────────────────────────────────────────────────────────
@@ -11,11 +11,12 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
 
   const scaleX = W / 20, scaleY = H / 22;
   const toCx = (cx) => W / 2 + cx * scaleX;
+  // FIX A3: phantom cy=0 is centre; positive cy goes DOWN in canvas space
+  // The backend uses the same convention so we keep toCy as-is.
   const toCy = (cy) => H / 2 + cy * scaleY;
   const toRx = (rx) => rx * scaleX;
   const toRy = (ry) => ry * scaleY;
 
-  // Tissue structures
   [...structures].forEach(s => {
     const cx2 = toCx(s.cx), cy2 = toCy(s.cy);
     const rx = toRx(s.rx), ry = toRy(s.ry);
@@ -35,7 +36,6 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
     ctx.restore();
   });
 
-  // ── Inline hover tooltip drawn at mouse position ──────────────────────────
   if (hoveredId && mousePos) {
     const hovS = structures.find(s => s.id === hoveredId);
     if (hovS) {
@@ -46,74 +46,45 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
         `c = ${hovS.speed_of_sound} m/s`,
       ];
       const PAD = 8, LINE_H = 14, TIP_W = 160, TIP_H = PAD * 2 + lines.length * LINE_H;
-      // Keep tooltip inside canvas bounds
       let tx = mousePos.x + 14, ty = mousePos.y - TIP_H / 2;
       if (tx + TIP_W > W - 4) tx = mousePos.x - TIP_W - 14;
       if (ty < 4) ty = 4;
       if (ty + TIP_H > H - 4) ty = H - TIP_H - 4;
-
-      // Shadow + background
       ctx.save();
       ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
       ctx.fillStyle = "rgba(5,12,28,0.92)";
-      ctx.beginPath();
-      ctx.roundRect(tx, ty, TIP_W, TIP_H, 5);
-      ctx.fill();
+      ctx.beginPath(); ctx.roundRect(tx, ty, TIP_W, TIP_H, 5); ctx.fill();
       ctx.restore();
-
-      // Border
       ctx.strokeStyle = "#00d4ff55"; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.roundRect(tx, ty, TIP_W, TIP_H, 5); ctx.stroke();
-
-      // Text
       ctx.textAlign = "left";
       lines.forEach((line, i) => {
         const ly = ty + PAD + i * LINE_H + 10;
-        if (i === 0) {
-          ctx.font = "bold 10px monospace"; ctx.fillStyle = "#ffffff";
-        } else {
-          ctx.font = "9px monospace"; ctx.fillStyle = "#7dc8e8";
-        }
+        if (i === 0) { ctx.font = "bold 10px monospace"; ctx.fillStyle = "#ffffff"; }
+        else { ctx.font = "9px monospace"; ctx.fillStyle = "#7dc8e8"; }
         ctx.fillText(line, tx + PAD, ly);
       });
-
-      // Tiny connector dot
       ctx.beginPath(); ctx.arc(mousePos.x, mousePos.y, 3, 0, 2 * Math.PI);
       ctx.fillStyle = "#00d4ff"; ctx.shadowColor = "#00d4ff"; ctx.shadowBlur = 6;
       ctx.fill(); ctx.shadowBlur = 0;
     }
   }
 
-  // Blood vessel — drawn as an animated tube
+  // Blood vessel
   if (vessel) {
     const vx = toCx(vessel.cx), vy = toCy(vessel.cy);
     const vRad = vessel.angle * Math.PI / 180;
     const len = 80;
     const dx = Math.cos(vRad) * len, dy = Math.sin(vRad) * len;
     const r = 8;
-
     ctx.save();
-    // Vessel tube
     ctx.beginPath();
-    ctx.moveTo(vx - dx, vy - dy);
-    ctx.lineTo(vx + dx, vy + dy);
-    ctx.strokeStyle = "#cc2244cc";
-    ctx.lineWidth = r * 2;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    // Vessel outline
+    ctx.moveTo(vx - dx, vy - dy); ctx.lineTo(vx + dx, vy + dy);
+    ctx.strokeStyle = "#cc2244cc"; ctx.lineWidth = r * 2; ctx.lineCap = "round"; ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(vx - dx, vy - dy);
-    ctx.lineTo(vx + dx, vy + dy);
-    ctx.strokeStyle = "#ff4466";
-    ctx.lineWidth = r * 2 + 2;
-    ctx.stroke();
-
-    // Blood flow arrows
-    ctx.strokeStyle = "#ff8899";
-    ctx.lineWidth = 1.5;
-    const arrowSpacing = 30;
+    ctx.moveTo(vx - dx, vy - dy); ctx.lineTo(vx + dx, vy + dy);
+    ctx.strokeStyle = "#ff4466"; ctx.lineWidth = r * 2 + 2; ctx.stroke();
+    ctx.strokeStyle = "#ff8899"; ctx.lineWidth = 1.5;
     for (let t = -1; t <= 1; t += 0.5) {
       const ax = vx + dx * t, ay = vy + dy * t;
       const alen = 10;
@@ -121,7 +92,6 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
       ctx.moveTo(ax - Math.cos(vRad) * alen, ay - Math.sin(vRad) * alen);
       ctx.lineTo(ax + Math.cos(vRad) * alen, ay + Math.sin(vRad) * alen);
       ctx.stroke();
-      // Arrowhead
       const ahead = 5;
       ctx.beginPath();
       ctx.moveTo(ax + Math.cos(vRad) * alen, ay + Math.sin(vRad) * alen);
@@ -132,13 +102,12 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
                  ay + Math.sin(vRad - 2.5) * ahead + Math.sin(vRad) * alen);
       ctx.stroke();
     }
-
     ctx.fillStyle = "#ff6677"; ctx.font = "9px monospace"; ctx.textAlign = "center";
     ctx.fillText(`vessel ${vessel.velocity} cm/s`, vx, vy - r - 4);
     ctx.restore();
   }
 
-  // Probe — draw on whichever edge it's on
+  // Probe
   const { edge, pos, angle } = probe;
   let px, py, angleRad = angle * Math.PI / 180;
   if (edge === "bottom")      { px = W / 2 + pos * scaleX; py = H - 8; }
@@ -146,7 +115,6 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
   else if (edge === "left")   { px = 8; py = H / 2 + pos * scaleY; }
   else                         { px = W - 8; py = H / 2 + pos * scaleY; }
 
-  // Probe rect perpendicular to edge
   ctx.save();
   ctx.translate(px, py);
   if (edge === "left" || edge === "right") ctx.rotate(Math.PI / 2);
@@ -155,7 +123,6 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, m
   ctx.shadowBlur = 0;
   ctx.restore();
 
-  // Beam line from probe
   const beamDirRad = angleRad;
   let bx, by;
   if (edge === "bottom")      { bx = Math.sin(beamDirRad); by = -Math.cos(beamDirRad); }
@@ -187,7 +154,7 @@ function drawAmode(canvas, data) {
     ctx.textAlign = "left"; return;
   }
 
-  const { echo, depth_cm } = data;
+  const { echo, depth_cm, boundaries } = data;
   const maxD = depth_cm[depth_cm.length - 1] || 20;
   const pL = 32, pB = 18, pT = 24, pw = W - pL - 8, ph = H - pB - pT;
 
@@ -207,18 +174,17 @@ function drawAmode(canvas, data) {
   ctx.beginPath(); ctx.moveTo(pL, midY); ctx.lineTo(pL + pw, midY);
   ctx.strokeStyle = "rgba(0,212,255,0.15)"; ctx.lineWidth = 1; ctx.stroke();
 
-  // Find peak for normalisation — use 99th percentile to avoid clipping
+  // Normalise using 99th percentile
   const sorted = [...echo.map(Math.abs)].sort((a, b) => a - b);
   const peakE = sorted[Math.floor(sorted.length * 0.999)] || 1e-6;
   const scale = (ph / 2 - 6) / peakE;
 
-  // --- Filled waveform (above + mirror below for classic A-mode look) --------
+  // Filled waveform
   const gradient = ctx.createLinearGradient(0, pT, 0, pT + ph);
   gradient.addColorStop(0,   "rgba(0,255,136,0.05)");
   gradient.addColorStop(0.5, "rgba(0,255,136,0.55)");
   gradient.addColorStop(1,   "rgba(0,255,136,0.05)");
 
-  // Build path for fill (mirror both sides)
   ctx.beginPath();
   ctx.moveTo(pL, midY);
   for (let i = 0; i < echo.length; i++) {
@@ -226,7 +192,6 @@ function drawAmode(canvas, data) {
     const y = midY - echo[i] * scale;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
-  // Trace back mirrored
   for (let i = echo.length - 1; i >= 0; i--) {
     const x = pL + (depth_cm[i] / maxD) * pw;
     const y = midY + echo[i] * scale;
@@ -235,7 +200,7 @@ function drawAmode(canvas, data) {
   ctx.closePath();
   ctx.fillStyle = gradient; ctx.fill();
 
-  // --- Bright stroke line on top ------------------------------------------
+  // Bright stroke line
   ctx.beginPath();
   for (let i = 0; i < echo.length; i++) {
     const x = pL + (depth_cm[i] / maxD) * pw;
@@ -255,7 +220,20 @@ function drawAmode(canvas, data) {
   }
   ctx.strokeStyle = "rgba(0,255,136,0.35)"; ctx.lineWidth = 0.8; ctx.stroke();
 
-  // Labels
+  // Boundary markers — small ticks above baseline at each tissue interface
+  if (boundaries && boundaries.length > 0) {
+    boundaries.forEach(([d, amp]) => {
+      const x = pL + (d / maxD) * pw;
+      const tickH = Math.max(4, amp * (ph / 2 - 6));
+      ctx.strokeStyle = `rgba(255,220,0,${Math.min(1, amp * 2 + 0.3)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, midY - 2);
+      ctx.lineTo(x, midY - 2 - tickH);
+      ctx.stroke();
+    });
+  }
+
   ctx.textAlign = "left"; ctx.fillStyle = "rgba(0,212,255,0.7)"; ctx.font = "bold 9px monospace";
   ctx.fillText("A-MODE  RF echo vs depth", pL + 4, pT - 6);
   ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "8px monospace";
@@ -263,6 +241,7 @@ function drawAmode(canvas, data) {
 }
 
 // ─── B-mode draw ──────────────────────────────────────────────────────────────
+// FIX B2: reduced log scale factor + better gamma for tissue texture
 function drawBmode(canvas, data) {
   if (!canvas || !canvas.width) return;
   const ctx = canvas.getContext("2d");
@@ -276,34 +255,46 @@ function drawBmode(canvas, data) {
     ctx.textAlign = "left"; return;
   }
 
-  const { lines, x_range, probe_x } = data;
+  const { lines, probe_x, fan_deg } = data;
   const numLines = lines.length;
-  const lineW = Math.max(1, W / numLines);
   const numDepth = lines[0].envelope ? lines[0].envelope.length : (lines[0].echo ? lines[0].echo.length : 0);
   if (numDepth === 0) return;
+
+  // FIX B1/B3: render fan geometry — each line has its own angle
+  // line.angle_deg is the absolute beam angle (set by backend fan-beam scan)
+  // We project each depth sample to canvas (X,Y) using polar fan geometry.
+  const maxDepthPx = H;
+  const depthScale = H / 22.0; // 22 cm -> H pixels (matches phantom scale)
+  const originX = W / 2;
+  const originY = 0;
 
   const imgData = ctx.createImageData(W, H);
   const px = imgData.data;
 
-  lines.forEach((line, li) => {
+  lines.forEach((line) => {
     const samples = line.envelope || line.echo;
     if (!samples) return;
-    const xStart = Math.round(li * lineW);
-    const xEnd   = Math.min(W, Math.round((li + 1) * lineW));
+    const angleDeg = line.angle_deg !== undefined ? line.angle_deg : 0;
+    const angleRad = angleDeg * Math.PI / 180;
+    const sinA = Math.sin(angleRad), cosA = Math.cos(angleRad);
 
-    for (let si = 0; si < numDepth; si++) {
-      const py2 = Math.floor((si / numDepth) * H);
-      if (py2 >= H) continue;
+    // For each sample along the beam, compute canvas (x,y) and paint a small dot
+    for (let si = 0; si < samples.length; si++) {
+      const depthCm = (si / samples.length) * 22.0;
+      const canvasX = Math.round(originX + sinA * depthCm * depthScale);
+      const canvasY = Math.round(originY + cosA * depthCm * depthScale);
+
+      if (canvasX < 0 || canvasX >= W || canvasY < 0 || canvasY >= H) continue;
 
       const raw = Math.abs(samples[si]);
-      // Log compression — same as real US scanners
-      const logVal = Math.log1p(raw * 200) / Math.log1p(200);
-      // Gamma curve to boost mid-range (tissue texture)
-      const brightness = Math.round(Math.min(255, Math.pow(logVal, 0.55) * 255));
+      // FIX B2: gentler log compression + proper gamma
+      const logVal = Math.log1p(raw * 50) / Math.log1p(50);
+      const brightness = Math.round(Math.min(255, Math.pow(logVal, 0.7) * 255));
 
-      for (let xp = xStart; xp < xEnd; xp++) {
-        const idx = (py2 * W + xp) * 4;
-        if (idx + 3 >= px.length) continue;
+      const idx = (canvasY * W + canvasX) * 4;
+      if (idx + 3 >= px.length) continue;
+      // Keep brightest value if overlapping beams
+      if (brightness > px[idx]) {
         px[idx]     = brightness;
         px[idx + 1] = brightness;
         px[idx + 2] = brightness;
@@ -317,29 +308,25 @@ function drawBmode(canvas, data) {
   // Depth scale on left edge
   ctx.fillStyle = "rgba(0,212,255,0.5)"; ctx.font = "7px monospace"; ctx.textAlign = "right";
   [0, 5, 10, 15, 20].forEach(d => {
-    const y = Math.round((d / 20) * H);
+    const y = Math.round((d / 22) * H);
     ctx.strokeStyle = "rgba(0,212,255,0.15)"; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(12, y); ctx.stroke();
     ctx.fillText(d + "cm", 26, y + 4);
   });
 
-  // Probe-centre marker
-  if (x_range && probe_x !== undefined) {
-    const xSpan = x_range[1] - x_range[0];
-    const cX = ((probe_x - x_range[0]) / xSpan) * W;
-    ctx.strokeStyle = "rgba(0,212,255,0.7)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.moveTo(cX, 0); ctx.lineTo(cX, H * 0.08); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#00d4ff"; ctx.font = "8px monospace"; ctx.textAlign = "center";
-    ctx.fillText(`▼ ${probe_x.toFixed(1)}cm`, cX, 18);
-    ctx.fillStyle = "rgba(90,133,170,0.4)";
-    ctx.fillText(`${x_range[0].toFixed(1)}`, 20, H - 5);
-    ctx.textAlign = "right";
-    ctx.fillText(`${x_range[1].toFixed(1)}cm`, W - 4, H - 5);
+  // Fan arc overlay at max depth
+  if (fan_deg) {
+    const r = H * 0.95;
+    const a1 = (-fan_deg * Math.PI / 180);
+    const a2 = (fan_deg * Math.PI / 180);
+    ctx.strokeStyle = "rgba(0,212,255,0.15)"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(originX, originY, r, a1 - Math.PI / 2, a2 - Math.PI / 2);
+    ctx.stroke();
   }
 
   ctx.fillStyle = "rgba(0,212,255,0.65)"; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
-  ctx.fillText("B-MODE  grayscale scan", 30, 14);
+  ctx.fillText("B-MODE  fan scan", 30, 14);
 }
 
 // ─── Doppler draw ─────────────────────────────────────────────────────────────
@@ -354,7 +341,7 @@ function drawDoppler(canvas, data) {
     ctx.fillText("Doppler auto-updates with probe and vessel settings", W / 2, H / 2);
     ctx.textAlign = "left"; return;
   }
-  const { frequencies, spectrum, vessel_velocity, wall_freq, fd_hz } = data;
+  const { frequencies, spectrum, vessel_velocity, wall_freq, fd_hz, theta_deg } = data;
   if (!frequencies) return;
   const pL = 30, pB = 16, pT = 14, pw = W - pL - 8, ph = H - pB - pT;
   ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "7px monospace"; ctx.textAlign = "right";
@@ -385,7 +372,6 @@ function drawDoppler(canvas, data) {
     ctx.strokeStyle = "rgba(255,107,53,0.5)"; ctx.lineWidth = 0.8; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(wx, pT); ctx.lineTo(wx, pT + ph); ctx.stroke(); ctx.setLineDash([]);
   }
-  // Mark Doppler peak
   if (fd_hz !== undefined) {
     const fx = pL + (fd_hz + maxF) / (2 * maxF) * pw;
     ctx.strokeStyle = "#00ff88aa"; ctx.lineWidth = 1; ctx.setLineDash([4, 2]);
@@ -395,54 +381,65 @@ function drawDoppler(canvas, data) {
   }
   ctx.textAlign = "left"; ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "9px monospace";
   ctx.fillText(`DOPPLER  v=${vessel_velocity?.toFixed(0)} cm/s`, pL + 4, pT + 10);
+  if (theta_deg !== undefined) {
+    ctx.fillText(`θ=${theta_deg.toFixed(1)}°  (beam∠vessel)`, pL + 4, pT + 22);
+  }
 }
 
 // ─── Doppler simulation ───────────────────────────────────────────────────────
-function simulateDoppler(probeAngle, probeEdge, vesselAngle, vesselVelocity, freqMhz, snrDb) {
+// FIX D1+D2: corrected angle convention and dotSign
+function simulateDoppler(probeAngle, probeEdge, vesselAngle, vesselVelocity, freqMhz, snrDb, noiseSeed) {
   const c = 1540, fc = freqMhz * 1e6;
 
-  // ── Convert probe to an absolute bearing in degrees (0° = up / north, CW positive)
-  // probeAngle is a tilt relative to the edge's inward normal.
-  // bottom edge: normal points up   (0°)
-  // top edge:    normal points down (180°)
-  // left edge:   normal points right (90°)
-  // right edge:  normal points left (270°)
-  let probeBearing = probeAngle; // bottom default: 0° + tilt
-  if (probeEdge === "top")   probeBearing = 180 + probeAngle;
-  if (probeEdge === "left")  probeBearing =  90 + probeAngle;
-  if (probeEdge === "right") probeBearing = 270 + probeAngle;
+  // probe beam direction as a math angle (0=right, CCW+), in degrees
+  // probeAngle is tilt relative to edge inward normal.
+  // bottom: normal=up=90°.  top: normal=down=270°.  left: normal=right=0°.  right: normal=left=180°
+  let probeNormalMath = 90; // bottom default
+  if (probeEdge === "top")   probeNormalMath = 270;
+  if (probeEdge === "left")  probeNormalMath = 0;
+  if (probeEdge === "right") probeNormalMath = 180;
+  // probeAngle tilts CW in screen space → subtract for math convention
+  const probeDirMath = (probeNormalMath - probeAngle + 360) % 360;
 
-  // ── Convert vessel angle to the same bearing convention.
-  // vessel.angle is 0-179 where 0° = rightward (standard math angle),
-  // so bearing = 90° - vessel.angle  (i.e. north-up, CW).
-  const vesselBearing = (90 - vesselAngle + 360) % 360;
+  // vessel.angle: UI convention 0=right, positive CCW (standard math)
+  const vesselDirMath = vesselAngle; // already math convention
 
-  // ── Angle between beam and vessel flow direction
-  let thetaDeg = Math.abs(probeBearing - vesselBearing);
-  if (thetaDeg > 180) thetaDeg = 360 - thetaDeg;
+  // Angle between beam direction and vessel flow direction
+  const diffDeg = ((probeDirMath - vesselDirMath) + 360) % 360;
+  // Shortest angle between the two directions
+  let thetaDeg = diffDeg > 180 ? 360 - diffDeg : diffDeg;
   const theta = thetaDeg * Math.PI / 180;
 
-  // ── Doppler shift fd = 2·v·cos(θ)·f/c
-  // Sign: if beam and vessel point in roughly the same direction → negative fd (away)
-  //       if they oppose → positive fd (toward).
-  const dotSign = Math.cos(theta) >= 0 ? -1 : 1; // toward probe = positive convention
-  const fd = dotSign * 2 * (vesselVelocity / 100) * Math.abs(Math.cos(theta)) * fc / c;
+  // FIX D2: positive fd = flow TOWARD probe (component along beam toward probe)
+  // cos(theta)>0 means vessel has component in probe beam direction → toward probe → +fd
+  const fd = 2 * (vesselVelocity / 100) * Math.cos(theta) * fc / c;
 
   const N = 512, maxF = 6000;
   const freqs = Array.from({ length: N }, (_, i) => -maxF + 2 * maxF * i / (N - 1));
-  const snrLin = Math.pow(10, Math.min(snrDb, 60) / 10); // cap at 60 dB to keep noise visible
+  const snrLin = Math.pow(10, Math.min(snrDb, 60) / 10);
 
-  // Spectral width scales with velocity (turbulence broadening)
   const sigma = 150 + vesselVelocity * 1.2;
+
+  // FIX D3: use a deterministic pseudo-random noise seeded by noiseSeed
+  // so spectrum doesn't flicker on every render
+  let rngState = noiseSeed || 12345;
+  const rng = () => {
+    rngState ^= rngState << 13; rngState ^= rngState >> 17; rngState ^= rngState << 5;
+    return (rngState >>> 0) / 0xFFFFFFFF;
+  };
+  // Box-Muller for Gaussian noise
+  const randn = () => {
+    const u = rng(), v = rng();
+    return Math.sqrt(-2 * Math.log(u + 1e-12)) * Math.cos(2 * Math.PI * v);
+  };
 
   const spectrum = freqs.map(f => {
     const sig = Math.exp(-0.5 * ((f - fd) / sigma) ** 2);
-    // Noise floor inversely proportional to SNR
-    const noise = (1 / Math.sqrt(snrLin)) * Math.random() * 0.35;
+    const noise = (1 / Math.sqrt(snrLin)) * Math.abs(randn()) * 0.35;
     return Math.max(0, sig + noise);
   });
 
-  // Wall filter: clamp near-zero frequencies (high-pass, removes slow-moving tissue)
+  // Wall filter
   const wallHz = 80;
   spectrum.forEach((_, i) => {
     if (Math.abs(freqs[i]) < wallHz) spectrum[i] *= Math.abs(freqs[i]) / wallHz;
@@ -464,7 +461,8 @@ export default function UltrasoundPage() {
   const [structures,  setStructures]  = useState([]);
   const [probe,       setProbe]       = useState({ edge: "bottom", pos: 0, angle: 0 });
   const [freqMhz,     setFreqMhz]     = useState(5);
-  const [snrDb,       setSnrDb]       = useState(300);
+  // FIX A1: SNR default 25 dB (not 300 dB) so noise is actually visible
+  const [snrDb,       setSnrDb]       = useState(25);
   const [mode,        setMode]        = useState("amode");
   const [amodeData,   setAmodeData]   = useState(null);
   const [bmodeData,   setBmodeData]   = useState(null);
@@ -488,7 +486,10 @@ export default function UltrasoundPage() {
   }, []);
   useEffect(() => { fetchPhantom(); }, [fetchPhantom]);
 
-  // A-mode: translate probe edge+pos to probe_x, probe_y, angle
+  // FIX A3: probe_y sign: bottom edge → probe_y = +11 (bottom of phantom),
+  // beam shoots upward into the phantom (negative y direction).
+  // Backend: beam_y = probe_y − depth*cos(θ), so starting at +11 with cos(0)=1
+  // means beam_y decreases as depth increases — correctly traversing the phantom top-to-bottom.
   const probeToScanParams = useCallback((p = probe) => {
     let probe_x = 0, probe_y = 0, angle = p.angle;
     if (p.edge === "bottom")     { probe_x = p.pos; probe_y = 11;  angle = p.angle; }
@@ -504,33 +505,58 @@ export default function UltrasoundPage() {
     setAmodeData(data);
   }, [probe, freqMhz, probeToScanParams]);
 
+  // FIX B1: backend now receives fan params; it sweeps angle not position
   const fetchBmode = useCallback(async (p = probe) => {
     const { probe_x, probe_y, angle } = probeToScanParams(p);
-    const data = await api.bmodeScam({ probe_x, probe_y, angle, frequency_mhz: freqMhz, num_lines: 60, fan_width: 7 });
+    const data = await api.bmodeScam({
+      probe_x, probe_y, angle,
+      frequency_mhz: freqMhz,
+      num_lines: 60,
+      fan_deg: 25   // ← NEW: fan half-angle in degrees (was fan_width in cm)
+    });
     setBmodeData(data);
   }, [probe, freqMhz, probeToScanParams]);
 
-  // A-mode: instant update on every probe move (backend is ~18ms, totally fine)
   useEffect(() => { const t = setTimeout(() => fetchAmode(), 0); return () => clearTimeout(t); }, [fetchAmode]);
-  // B-mode: 400ms debounce — heavier call (60 lines), runs on separate thread
   useEffect(() => { const t = setTimeout(() => fetchBmode(), 400); return () => clearTimeout(t); }, [fetchBmode]);
 
-  // Doppler auto-update
-  useEffect(() => {
-    setDopplerData(simulateDoppler(probe.angle, probe.edge, vessel.angle, vessel.velocity, freqMhz, snrDb));
-  }, [probe, vessel, freqMhz, snrDb]);
+  // FIX D3: noise seed is stable per [probe, vessel, freqMhz] combination
+  const dopplerNoiseSeed = useMemo(() => {
+    return Math.floor(
+      Math.abs(Math.sin(probe.angle * 31 + probe.pos * 17 + vessel.angle * 13 + vessel.velocity * 7 + freqMhz * 19)) * 1e9
+    );
+  }, [probe.angle, probe.pos, probe.edge, vessel.angle, vessel.velocity, freqMhz]);
 
-  // Resize canvases
-  const resizeCanvas = (ref) => {
-    if (!ref.current) return;
-    const par = ref.current.parentElement; if (!par) return;
-    ref.current.width = par.clientWidth; ref.current.height = par.clientHeight;
-  };
   useEffect(() => {
+    setDopplerData(simulateDoppler(probe.angle, probe.edge, vessel.angle, vessel.velocity, freqMhz, snrDb, dopplerNoiseSeed));
+  }, [probe, vessel, freqMhz, snrDb, dopplerNoiseSeed]);
+
+  // FIX A2: use ResizeObserver so canvas dimensions are settled before drawing
+  const resizeCanvas = (ref) => {
+    if (!ref.current) return false;
+    const par = ref.current.parentElement; if (!par) return false;
+    const w = par.clientWidth, h = par.clientHeight;
+    if (w === ref.current.width && h === ref.current.height) return false;
+    ref.current.width = w; ref.current.height = h;
+    return true;
+  };
+
+  useEffect(() => {
+    const obs = new ResizeObserver(() => {
+      [phantomRef, amodeRef, bmodeRef, dopplerRef].forEach(resizeCanvas);
+      // Re-trigger draws after resize
+      drawPhantom(phantomRef.current, structures, probe, hoveredId, selectedId, vessel, mousePos);
+      drawAmode(amodeRef.current, amodeData);
+      drawBmode(bmodeRef.current, bmodeData);
+      drawDoppler(dopplerRef.current, dopplerData);
+    });
+    [phantomRef, amodeRef, bmodeRef, dopplerRef].forEach(r => {
+      if (r.current?.parentElement) obs.observe(r.current.parentElement);
+    });
+    // Initial size
     [phantomRef, amodeRef, bmodeRef, dopplerRef].forEach(resizeCanvas);
-    const onResize = () => [phantomRef, amodeRef, bmodeRef, dopplerRef].forEach(resizeCanvas);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => obs.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { resizeCanvas(phantomRef); drawPhantom(phantomRef.current, structures, probe, hoveredId, selectedId, vessel, mousePos); },
@@ -655,14 +681,14 @@ export default function UltrasoundPage() {
             <div className="control-row">
               <div className="control-label">
                 <span>SNR</span>
-                <span className="control-value">{snrDb >= 1000 ? "∞ dB" : snrDb + " dB"}</span>
+                {/* FIX A1: max 60 dB, default 25 dB — realistic range */}
+                <span className="control-value">{snrDb} dB</span>
               </div>
-              <input type="range" className="slider" min={0} max={1000} step={5}
+              <input type="range" className="slider" min={5} max={60} step={1}
                 value={snrDb} onChange={e => setSnrDb(Number(e.target.value))} />
             </div>
           </div>
 
-          {/* Vessel / Doppler controls — always visible */}
           <div className="panel-section" style={{ border: "1px solid rgba(168,85,247,0.3)" }}>
             <div className="panel-title" style={{ color: "#a855f7" }}>Blood Vessel</div>
 
@@ -697,14 +723,12 @@ export default function UltrasoundPage() {
               <div style={{ color: "var(--text2)", lineHeight: 1.6 }}>
                 fd = 2·v·cos(θ)·f/c<br />
                 θ = beam vs vessel angle<br />
-                fd ≈ {dopplerData?.fd_hz !== undefined ? dopplerData.fd_hz.toFixed(0) : "—"} Hz
+                fd ≈ {dopplerData?.fd_hz !== undefined ? dopplerData.fd_hz.toFixed(0) : "—"} Hz<br />
+                θ = {dopplerData?.theta_deg !== undefined ? dopplerData.theta_deg.toFixed(1) : "—"}°
               </div>
             </div>
           </div>
 
-          {/* Hover info is now shown as an inline tooltip directly on the phantom canvas */}
-
-          {/* Edit selected */}
           {selectedS && (
             <div className="panel-section" style={{ border: "1px solid var(--warn)44" }}>
               <div className="panel-title" style={{ color: "var(--warn)" }}>✎ EDIT: {selectedS.label}</div>
@@ -791,7 +815,7 @@ export default function UltrasoundPage() {
         <div className="status-item">pos <span>{probe.pos.toFixed(1)} cm</span></div>
         <div className="status-item">angle <span>{probe.angle}°</span></div>
         <div className="status-item">freq <span>{freqMhz} MHz</span></div>
-        <div className="status-item">SNR <span>{snrDb >= 1000 ? "∞" : snrDb} dB</span></div>
+        <div className="status-item">SNR <span>{snrDb} dB</span></div>
         <div className="status-item">λ <span>{(1540 / (freqMhz * 1e6) * 1000).toFixed(3)} mm</span></div>
         <div className="status-item">vessel_v <span>{vessel.velocity} cm/s</span></div>
         <div className="status-item">fd <span>{dopplerData?.fd_hz?.toFixed(0) ?? "—"} Hz</span></div>

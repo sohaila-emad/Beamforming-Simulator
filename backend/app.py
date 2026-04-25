@@ -262,32 +262,39 @@ def update_structure():
 
 @app.route("/api/ultrasound/bmode", methods=["POST"])
 def bmode_scan():
-    """Compute multiple A-mode lines to form B-mode image, centred on probe_x."""
+    """
+    FIX B1: Phased-array fan-beam B-mode scan.
+    Instead of sweeping the probe position laterally, we keep the probe fixed and
+    sweep the beam angle from (centre_angle - fan_deg) to (centre_angle + fan_deg).
+    Each line is one A-mode result fired at a different angle.
+    The frontend projects each line onto the canvas using polar fan geometry.
+    """
     data = request.json or {}
     probe_x   = float(data.get("probe_x", 0))
     probe_y   = float(data.get("probe_y", 0))
-    angle     = float(data.get("angle", 0))
+    angle     = float(data.get("angle", 0))       # central beam angle (degrees)
     freq_mhz  = float(data.get("frequency_mhz", 5.0))
     num_lines = int(data.get("num_lines", 64))
-    fan_width = float(data.get("fan_width", 8.0))
+    fan_deg   = float(data.get("fan_deg", 25.0))  # half-angle of the fan (degrees)
 
-    x_left  = probe_x - fan_width
-    x_right = probe_x + fan_width
-    x_positions = np.linspace(x_left, x_right, num_lines)
+    # Sweep angles symmetrically around the central steering direction
+    angles = np.linspace(angle - fan_deg, angle + fan_deg, num_lines)
     bmode_lines = []
-    for px in x_positions:
-        result = _phantom.compute_amode(px, probe_y, angle, freq_mhz)
+    for line_angle in angles:
+        result = _phantom.compute_amode(probe_x, probe_y, float(line_angle), freq_mhz)
         bmode_lines.append({
-            "x": float(px),
-            "envelope": result["envelope"],   # use envelope for brightness
-            "depth_cm": result["depth_cm"]
+            "angle_deg": float(line_angle),   # absolute beam angle for this line
+            "envelope":  result["envelope"],  # Hilbert envelope → brightness
+            "depth_cm":  result["depth_cm"]
         })
 
     return jsonify({
-        "lines": bmode_lines,
+        "lines":     bmode_lines,
         "num_lines": num_lines,
-        "x_range": [float(x_left), float(x_right)],
-        "probe_x": probe_x
+        "probe_x":   probe_x,
+        "probe_y":   probe_y,
+        "fan_deg":   fan_deg,
+        "centre_angle": angle
     })
 
 
