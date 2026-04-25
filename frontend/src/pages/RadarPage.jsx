@@ -4,22 +4,26 @@ import { Slider } from "../components/ControlPanel";
 
 const MAX_TARGETS = 5;
 const TARGET_COLORS = ["#ffb800", "#ff6b35", "#00ff88", "#a855f7", "#00d4ff"];
+const MAX_RANGE = 5000;
+const DECAY_MS = 7000; // phosphor blips fully fade after 7 s
 
-function polarToCanvas(angle, distance, cx, cy, R, maxRange) {
+function polarToCanvas(angle, distance, cx, cy, R) {
   const rad = ((angle - 90) * Math.PI) / 180;
-  const r = (distance / maxRange) * R;
+  const r = (distance / MAX_RANGE) * R;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
-function canvasToPolar(px, py, cx, cy, R, maxRange) {
+function canvasToPolar(px, py, cx, cy, R) {
   const dx = px - cx, dy = py - cy;
   const r = Math.hypot(dx, dy);
-  const distance = Math.min((r / R) * maxRange, maxRange * 0.95);
+  const distance = Math.min((r / R) * MAX_RANGE, MAX_RANGE * 0.95);
   const angle = ((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360;
   return { angle, distance };
 }
 
-function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTarget) {
+// ─── PPI draw ─────────────────────────────────────────────────────────────────
+// sweepHistory: [{angle, peak_power, peak_range, ts}]  — newest entries last
+function drawRadarPPI(canvas, state, sweepHistory, scanAngle, draggingTarget, hoverTarget) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
@@ -27,7 +31,6 @@ function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTa
 
   const cx = W / 2, cy = H / 2;
   const R = Math.min(W, H) * 0.42;
-  const MAX_RANGE = 5000;
 
   ctx.fillStyle = "#020a06"; ctx.fillRect(0, 0, W, H);
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
@@ -37,7 +40,7 @@ function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTa
   for (let i = 1; i <= 4; i++) {
     ctx.beginPath(); ctx.arc(cx, cy, (R * i) / 4, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(0,80,30,0.5)"; ctx.lineWidth = 1; ctx.stroke();
-    ctx.fillStyle = "rgba(0,180,60,0.4)"; ctx.font = "8px Space Mono, monospace";
+    ctx.fillStyle = "rgba(0,180,60,0.4)"; ctx.font = "8px Space Mono, monospace"; ctx.textAlign = "left";
     ctx.fillText(`${(MAX_RANGE * i / 4 / 1000).toFixed(1)} km`, cx + 4, cy - (R * i) / 4);
   }
 
@@ -51,22 +54,28 @@ function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTa
   }
   ctx.textAlign = "left";
 
-  // PPI returns (phosphor)
-  if (ppiData?.ppi) {
-    ppiData.ppi.forEach(({ angle, peak_power, peak_range }) => {
-      if (peak_power < 0.05) return;
-      const { x, y } = polarToCanvas(angle, peak_range, cx, cy, R, MAX_RANGE);
-      const alpha = peak_power * 0.6;
-      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(0,255,80,${alpha})`;
-      ctx.shadowColor = "#00ff50"; ctx.shadowBlur = peak_power * 12;
+  // ── Phosphor persistence ───────────────────────────────────────────────────
+  const now = Date.now();
+  if (sweepHistory && sweepHistory.length > 0) {
+    sweepHistory.forEach(({ angle, peak_power, peak_range, ts }) => {
+      if (!peak_power || peak_power < 0.05) return;
+      const age = Math.min(1, (now - ts) / DECAY_MS);
+      const alpha = peak_power * (1 - age) * 0.9;
+      if (alpha < 0.015) return;
+      const { x, y } = polarToCanvas(angle, peak_range, cx, cy, R);
+      const g = Math.round(180 + 75 * (1 - age));
+      const r2 = Math.round(10 + 40 * age);
+      const radius = Math.max(1.5, 4 * (1 - age * 0.6));
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${r2},${g},50,${alpha.toFixed(3)})`;
+      ctx.shadowColor = "#00ff50"; ctx.shadowBlur = peak_power * 10 * (1 - age);
       ctx.fill(); ctx.shadowBlur = 0;
     });
   }
 
   // Sweep beam
   const sweepRad = ((scanAngle - 90) * Math.PI) / 180;
-  const bwRad = ((state?.beam_width || 5) * Math.PI) / 180;
+  const bwRad = (((state?.beam_width) || 5) * Math.PI) / 180;
   ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.arc(cx, cy, R, sweepRad - bwRad / 2, sweepRad + bwRad / 2); ctx.closePath();
   const sweepGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
@@ -77,32 +86,28 @@ function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTa
   ctx.strokeStyle = "rgba(0,255,80,0.9)"; ctx.lineWidth = 2;
   ctx.shadowColor = "#00ff50"; ctx.shadowBlur = 8; ctx.stroke(); ctx.shadowBlur = 0;
 
-  // Targets with drag affordance
-  state?.targets?.forEach((t, idx) => {
+  // Targets
+  (state?.targets || []).forEach((t, idx) => {
     const col = TARGET_COLORS[idx % TARGET_COLORS.length];
-    const { x: tx, y: ty } = polarToCanvas(t.angle, t.distance, cx, cy, R, MAX_RANGE);
+    const { x: tx, y: ty } = polarToCanvas(t.angle, t.distance, cx, cy, R);
     const sz = Math.max(4, (t.size / 100) * 9);
     const isDrag = draggingTarget === t.id;
     const isHover = hoverTarget === t.id;
 
-    // Drag trail ring
     if (isDrag || isHover) {
       ctx.beginPath(); ctx.arc(tx, ty, sz + 8, 0, Math.PI * 2);
       ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
     }
-
     ctx.beginPath(); ctx.arc(tx, ty, sz, 0, Math.PI * 2);
     ctx.strokeStyle = col; ctx.lineWidth = isDrag ? 2.5 : 1.5;
     ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = col + (isDrag ? "88" : "66"); ctx.fill();
-    ctx.shadowColor = "#00ff50"; ctx.shadowBlur = 0;
 
     ctx.fillStyle = isDrag ? col : "#ffb800";
     ctx.font = `${isDrag ? "bold " : ""}9px Space Mono, monospace`;
     ctx.fillText(`${t.id} ${(t.distance / 1000).toFixed(1)}km`, tx + sz + 3, ty + 3);
 
-    // Crosshair when dragging
     if (isDrag) {
       ctx.strokeStyle = col + "aa"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx, ty); ctx.stroke();
@@ -110,16 +115,18 @@ function drawRadarPPI(canvas, state, ppiData, scanAngle, draggingTarget, hoverTa
     }
   });
 
+  // Centre dot
   ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2);
   ctx.fillStyle = "#00ff50"; ctx.shadowColor = "#00ff50"; ctx.shadowBlur = 10;
   ctx.fill(); ctx.shadowBlur = 0;
 
-  ctx.fillStyle = "rgba(0,200,60,0.5)"; ctx.font = "10px Space Mono, monospace";
+  ctx.fillStyle = "rgba(0,200,60,0.5)"; ctx.font = "10px Space Mono, monospace"; ctx.textAlign = "left";
   ctx.fillText("PPI RADAR DISPLAY", 12, 18);
   ctx.font = "8px Space Mono, monospace"; ctx.fillStyle = "rgba(0,200,60,0.35)";
   ctx.fillText("drag targets to reposition", 12, H - 10);
 }
 
+// ─── Range profile draw ────────────────────────────────────────────────────────
 function drawRangeProfile(canvas, scanData) {
   if (!canvas || !scanData) return;
   const ctx = canvas.getContext("2d");
@@ -132,7 +139,7 @@ function drawRangeProfile(canvas, scanData) {
   for (let i = 0; i <= 5; i++) {
     const x = (i / 5) * W;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    ctx.fillStyle = "rgba(0,200,60,0.4)"; ctx.font = "8px Space Mono, monospace";
+    ctx.fillStyle = "rgba(0,200,60,0.4)"; ctx.font = "8px Space Mono, monospace"; ctx.textAlign = "left";
     ctx.fillText(`${((maxRange * i) / 5 / 1000).toFixed(1)}km`, x + 2, H - 4);
   }
   ctx.beginPath();
@@ -143,82 +150,185 @@ function drawRangeProfile(canvas, scanData) {
   }
   ctx.strokeStyle = "#00ff50"; ctx.lineWidth = 1.5;
   ctx.shadowColor = "#00ff50"; ctx.shadowBlur = 6; ctx.stroke(); ctx.shadowBlur = 0;
-  ctx.fillStyle = "rgba(0,200,60,0.5)"; ctx.font = "10px Space Mono, monospace";
+  ctx.fillStyle = "rgba(0,200,60,0.5)"; ctx.font = "10px Space Mono, monospace"; ctx.textAlign = "left";
   ctx.fillText(`RANGE PROFILE  θ=${scanData.scan_angle?.toFixed(0)}°`, 8, 14);
 }
 
+// ─── Component ─────────────────────────────────────────────────────────────────
 export default function RadarPage() {
-  const [state, setState] = useState(null);
-  const [ppiData, setPpiData] = useState(null);
-  const [scanData, setScanData] = useState(null);
-  const [scanAngle, setScanAngle] = useState(0);
-  const [scanning, setScanning] = useState(false);
-  const [beamWidth, setBeamWidth] = useState(5);
-  const [scanSpeed, setScanSpeed] = useState(3);
-  const [snrDb, setSnrDb] = useState(20);
-  const [newTarget, setNewTarget] = useState({ distance: 1500, angle: 90, size: 40 });
+  const [state,          setState]          = useState(null);
+  const [sweepHistory,   setSweepHistory]   = useState([]);
+  const [scanData,       setScanData]       = useState(null);
+  const [scanAngle,      setScanAngle]      = useState(0);
+  const [scanning,       setScanning]       = useState(false);
+  const [beamWidth,      setBeamWidth]      = useState(5);
+  const [scanSpeed,      setScanSpeed]      = useState(3);
+  const [snrDb,          setSnrDb]          = useState(20);
+  const [newTarget,      setNewTarget]      = useState({ distance: 1500, angle: 90, size: 40 });
   const [draggingTarget, setDraggingTarget] = useState(null);
-  const [hoverTarget, setHoverTarget] = useState(null);
+  const [hoverTarget,    setHoverTarget]    = useState(null);
 
-  const ppiRef = useRef(null);
-  const rangeRef = useRef(null);
-  const scanRef = useRef(null);
-  const scanAngleRef = useRef(0);
-  const stateRef = useRef(null);
+  const ppiRef          = useRef(null);
+  const rangeRef        = useRef(null);
+  const scanRef         = useRef(null);        // interval handle
+  const rafRef          = useRef(null);        // rAF handle for smooth phosphor redraw
+  const scanAngleRef    = useRef(0);
+  const stateRef        = useRef(null);
+  const sweepHistoryRef = useRef([]);           // ref so interval always reads fresh array
 
+  // ── Initial load ────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
-    const s = await api.radarState(); setState(s); stateRef.current = s;
+    try {
+      const s = await api.radarState();
+      setState(s); stateRef.current = s;
+    } catch (e) { console.error("radarState:", e); }
   }, []);
-  const fetchPPI = useCallback(async () => { const d = await api.radarPPI(); setPpiData(d); }, []);
 
-  useEffect(() => { fetchState(); fetchPPI(); }, [fetchState, fetchPPI]);
-
-  // Canvas resize + redraw
-  useEffect(() => {
-    [ppiRef, rangeRef].forEach((ref) => {
-      if (!ref.current) return;
-      const p = ref.current.parentElement;
-      ref.current.width = p.clientWidth; ref.current.height = p.clientHeight;
-    });
-    drawRadarPPI(ppiRef.current, state, ppiData, scanAngle, draggingTarget, hoverTarget);
-    drawRangeProfile(rangeRef.current, scanData);
-  }, [state, ppiData, scanData, scanAngle, draggingTarget, hoverTarget]);
-
-  // Scan animation
-  useEffect(() => {
-    if (!scanning) { if (scanRef.current) clearInterval(scanRef.current); return; }
-    scanRef.current = setInterval(async () => {
-      const next = (scanAngleRef.current + scanSpeed) % 360;
-      scanAngleRef.current = next; setScanAngle(next);
-      const ret = await api.radarScan(next); setScanData(ret);
-      if (Math.floor(next / 10) !== Math.floor((next - scanSpeed) / 10)) {
-        const d = await api.radarPPI(); setPpiData(d);
+  // Pull full PPI from backend and stamp blips with current time
+  const refreshHistory = useCallback(async () => {
+    try {
+      const d = await api.radarPPI();
+      if (d?.ppi) {
+        const ts = Date.now();
+        const fresh = d.ppi
+          .filter(b => b.peak_power > 0.05)
+          .map(b => ({ ...b, ts }));
+        // Merge: replace any blip at same angle bucket (keep newest ts)
+        const merged = [...sweepHistoryRef.current];
+        fresh.forEach(nb => {
+          const idx = merged.findIndex(ob => Math.abs(ob.angle - nb.angle) < 2);
+          if (idx >= 0) merged[idx] = nb; else merged.push(nb);
+        });
+        sweepHistoryRef.current = merged;
+        setSweepHistory([...merged]);
       }
+    } catch (e) { console.error("radarPPI:", e); }
+  }, []);
+
+  useEffect(() => { fetchState(); refreshHistory(); }, [fetchState, refreshHistory]);
+
+  // ── rAF loop — keeps phosphor decay animating even when scan is idle ────────
+  useEffect(() => {
+    let alive = true;
+    function frame() {
+      if (!alive) return;
+      // Prune fully faded entries
+      const now = Date.now();
+      const pruned = sweepHistoryRef.current.filter(b => (now - b.ts) < DECAY_MS + 500);
+      if (pruned.length !== sweepHistoryRef.current.length) {
+        sweepHistoryRef.current = pruned;
+        setSweepHistory([...pruned]);
+      }
+      // Resize + draw PPI
+      if (ppiRef.current) {
+        const par = ppiRef.current.parentElement;
+        if (par) {
+          const pw = par.clientWidth, ph = par.clientHeight;
+          if (ppiRef.current.width !== pw)  ppiRef.current.width  = pw;
+          if (ppiRef.current.height !== ph) ppiRef.current.height = ph;
+        }
+        drawRadarPPI(
+          ppiRef.current,
+          stateRef.current,
+          sweepHistoryRef.current,
+          scanAngleRef.current,
+          null,  // dragging tracked separately via state
+          null
+        );
+      }
+      rafRef.current = requestAnimationFrame(frame);
+    }
+    rafRef.current = requestAnimationFrame(frame);
+    return () => { alive = false; cancelAnimationFrame(rafRef.current); };
+  }, []);
+
+  // ── Separate effect to redraw PPI when drag/hover state changes ─────────────
+  useEffect(() => {
+    if (!ppiRef.current) return;
+    drawRadarPPI(
+      ppiRef.current,
+      stateRef.current,
+      sweepHistoryRef.current,
+      scanAngleRef.current,
+      draggingTarget,
+      hoverTarget
+    );
+  }, [draggingTarget, hoverTarget, state]);
+
+  // ── Range profile resize+draw ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!rangeRef.current) return;
+    const par = rangeRef.current.parentElement;
+    if (par) { rangeRef.current.width = par.clientWidth; rangeRef.current.height = par.clientHeight; }
+    drawRangeProfile(rangeRef.current, scanData);
+  }, [scanData]);
+
+  // ── Scan animation interval ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!scanning) {
+      if (scanRef.current) clearInterval(scanRef.current);
+      return;
+    }
+    scanRef.current = setInterval(async () => {
+      try {
+        const next = (scanAngleRef.current + scanSpeed) % 360;
+        scanAngleRef.current = next;
+        setScanAngle(next);
+
+        const ret = await api.radarScan(next);
+        setScanData(ret);
+
+        // Append new blips from this scan angle into history
+        if (ret?.ppi) {
+          const ts = Date.now();
+          const newBlips = ret.ppi
+            .filter(b => b.peak_power > 0.05)
+            .map(b => ({ ...b, ts }));
+          const merged = [...sweepHistoryRef.current];
+          newBlips.forEach(nb => {
+            const idx = merged.findIndex(ob => Math.abs(ob.angle - nb.angle) < 1.5);
+            if (idx >= 0) merged[idx] = nb; else merged.push(nb);
+          });
+          sweepHistoryRef.current = merged;
+          setSweepHistory([...merged]);
+        } else if (ret?.peak_power !== undefined) {
+          // fallback: single return object
+          const ts = Date.now();
+          const nb = { angle: next, peak_power: ret.peak_power, peak_range: ret.peak_range ?? 1000, ts };
+          if (nb.peak_power > 0.05) {
+            const merged = [...sweepHistoryRef.current];
+            const idx = merged.findIndex(ob => Math.abs(ob.angle - nb.angle) < 1.5);
+            if (idx >= 0) merged[idx] = nb; else merged.push(nb);
+            sweepHistoryRef.current = merged;
+            setSweepHistory([...merged]);
+          }
+        }
+      } catch (e) { console.error("scan tick:", e); }
     }, 100);
     return () => clearInterval(scanRef.current);
   }, [scanning, scanSpeed]);
 
-  // ── Target dragging on PPI ──
+  // ── Target dragging ──────────────────────────────────────────────────────────
   const getPpiMetrics = () => {
     if (!ppiRef.current) return null;
     const { width: W, height: H } = ppiRef.current;
-    return { cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.42, MAX_RANGE: 5000 };
+    return { cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.42 };
   };
 
   const getMousePolar = (e) => {
     if (!ppiRef.current) return null;
     const rect = ppiRef.current.getBoundingClientRect();
     const m = getPpiMetrics(); if (!m) return null;
-    return canvasToPolar(e.clientX - rect.left, e.clientY - rect.top, m.cx, m.cy, m.R, m.MAX_RANGE);
+    return canvasToPolar(e.clientX - rect.left, e.clientY - rect.top, m.cx, m.cy, m.R);
   };
 
   const getTargetAtMouse = (e) => {
-    if (!ppiRef.current || !state?.targets) return null;
+    if (!ppiRef.current || !stateRef.current?.targets) return null;
     const rect = ppiRef.current.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const m = getPpiMetrics(); if (!m) return null;
-    for (const t of state.targets) {
-      const { x, y } = polarToCanvas(t.angle, t.distance, m.cx, m.cy, m.R, m.MAX_RANGE);
+    for (const t of stateRef.current.targets) {
+      const { x, y } = polarToCanvas(t.angle, t.distance, m.cx, m.cy, m.R);
       const sz = Math.max(4, (t.size / 100) * 9) + 10;
       if (Math.hypot(mx - x, my - y) <= sz) return t.id;
     }
@@ -235,7 +345,9 @@ export default function RadarPage() {
       const polar = getMousePolar(e); if (!polar) return;
       setState(s => {
         if (!s) return s;
-        return { ...s, targets: s.targets.map(t => t.id === draggingTarget ? { ...t, angle: polar.angle, distance: polar.distance } : t) };
+        const updated = { ...s, targets: s.targets.map(t => t.id === draggingTarget ? { ...t, angle: polar.angle, distance: polar.distance } : t) };
+        stateRef.current = updated;
+        return updated;
       });
     } else {
       setHoverTarget(getTargetAtMouse(e));
@@ -246,23 +358,44 @@ export default function RadarPage() {
     if (!draggingTarget) return;
     const polar = getMousePolar(e);
     if (polar) {
-      const s = await api.updateTarget({ id: draggingTarget, angle: polar.angle, distance: polar.distance });
-      setState(s); stateRef.current = s;
-      const d = await api.radarPPI(); setPpiData(d);
+      try {
+        const s = await api.updateTarget({ id: draggingTarget, angle: polar.angle, distance: polar.distance });
+        setState(s); stateRef.current = s;
+        await refreshHistory();
+      } catch (e2) { console.error("updateTarget:", e2); }
     }
     setDraggingTarget(null);
   };
 
-  const updateSettings = async (updates) => { const s = await api.radarSettings(updates); setState(s); stateRef.current = s; };
-  const addTarget = async () => {
-    if ((state?.targets?.length || 0) >= MAX_TARGETS) return;
-    const s = await api.addTarget(newTarget); setState(s); stateRef.current = s; await fetchPPI();
-  };
-  const removeTarget = async (tid) => { const s = await api.removeTarget(tid); setState(s); stateRef.current = s; await fetchPPI(); };
-  const updateTarget = async (tid, key, val) => {
-    const s = await api.updateTarget({ id: tid, [key]: val }); setState(s); stateRef.current = s; await fetchPPI();
+  const updateSettings = async (updates) => {
+    try {
+      const s = await api.radarSettings(updates); setState(s); stateRef.current = s;
+    } catch (e) { console.error("radarSettings:", e); }
   };
 
+  const addTarget = async () => {
+    if ((state?.targets?.length || 0) >= MAX_TARGETS) return;
+    try {
+      const s = await api.addTarget(newTarget); setState(s); stateRef.current = s;
+      await refreshHistory();
+    } catch (e) { console.error("addTarget:", e); }
+  };
+
+  const removeTarget = async (tid) => {
+    try {
+      const s = await api.removeTarget(tid); setState(s); stateRef.current = s;
+      await refreshHistory();
+    } catch (e) { console.error("removeTarget:", e); }
+  };
+
+  const updateTarget = async (tid, key, val) => {
+    try {
+      const s = await api.updateTarget({ id: tid, [key]: val }); setState(s); stateRef.current = s;
+      await refreshHistory();
+    } catch (e) { console.error("updateTarget:", e); }
+  };
+
+  // ── JSX ──────────────────────────────────────────────────────────────────────
   return (
     <div className="page">
       {/* Sidebar */}
@@ -284,6 +417,12 @@ export default function RadarPage() {
               <strong style={{ color: "#00ff50" }}>Narrow beam</strong> → precise localization
             </div>
           </div>
+          {sweepHistory.length > 0 && (
+            <button className="btn" style={{ fontSize: 10 }}
+              onClick={() => { sweepHistoryRef.current = []; setSweepHistory([]); }}>
+              ✕ Clear phosphor
+            </button>
+          )}
         </div>
 
         <div className="panel-section">
@@ -340,6 +479,7 @@ export default function RadarPage() {
             <div className="status-item">angle <span style={{ color: "#00ff50" }}>{scanAngle.toFixed(0)}°</span></div>
             <div className="status-item">beam_w <span style={{ color: "#00ff50" }}>{beamWidth}°</span></div>
             <div className="status-item">snr <span style={{ color: "#00ff50" }}>{snrDb >= 1000 ? "∞" : snrDb} dB</span></div>
+            <div className="status-item">blips <span style={{ color: "#00ff50" }}>{sweepHistory.length}</span></div>
             <div className={`badge ${scanning ? "connected" : "warn"}`}>{scanning ? "SCANNING" : "IDLE"}</div>
           </div>
         </div>
@@ -350,7 +490,7 @@ export default function RadarPage() {
               <div className="viz-header" style={{ background: "#030d08", borderColor: "#0a2010" }}>
                 <span className="viz-title" style={{ color: "#00cc40" }}>PPI PLAN POSITION INDICATOR</span>
                 <span style={{ fontSize: 9, color: "rgba(0,180,60,0.5)", fontFamily: "var(--font-mono)" }}>
-                  {hoverTarget ? `hover: ${hoverTarget}` : draggingTarget ? `moving: ${draggingTarget}` : "drag targets to move"}
+                  {hoverTarget ? `hover: ${hoverTarget}` : draggingTarget ? `moving: ${draggingTarget}` : "phosphor persistence · drag to move"}
                 </span>
               </div>
               <div className="viz-body" style={{ background: "#020a06", cursor: draggingTarget ? "grabbing" : hoverTarget ? "grab" : "default" }}

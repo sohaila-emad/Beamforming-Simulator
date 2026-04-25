@@ -262,14 +262,18 @@ def update_structure():
 
 @app.route("/api/ultrasound/bmode", methods=["POST"])
 def bmode_scan():
-    """Compute multiple A-mode lines to form B-mode image."""
+    """Compute multiple A-mode lines to form B-mode image, centred on probe_x."""
     data = request.json or {}
-    probe_y = float(data.get("probe_y", 0))
-    angle = float(data.get("angle", 0))
-    freq_mhz = float(data.get("frequency_mhz", 5.0))
+    probe_x   = float(data.get("probe_x", 0))
+    probe_y   = float(data.get("probe_y", 0))
+    angle     = float(data.get("angle", 0))
+    freq_mhz  = float(data.get("frequency_mhz", 5.0))
     num_lines = int(data.get("num_lines", 64))
+    fan_width = float(data.get("fan_width", 8.0))  # half-width in cm around probe_x
 
-    x_positions = np.linspace(-8, 8, num_lines)
+    x_left  = probe_x - fan_width
+    x_right = probe_x + fan_width
+    x_positions = np.linspace(x_left, x_right, num_lines)
     bmode_lines = []
     for px in x_positions:
         result = _phantom.compute_amode(px, probe_y, angle, freq_mhz)
@@ -282,7 +286,8 @@ def bmode_scan():
     return jsonify({
         "lines": bmode_lines,
         "num_lines": num_lines,
-        "x_range": [-8, 8]
+        "x_range": [float(x_left), float(x_right)],
+        "probe_x": probe_x
     })
 
 

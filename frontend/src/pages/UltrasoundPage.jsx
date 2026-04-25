@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "../utils/api";
 
 // ─── Phantom draw ─────────────────────────────────────────────────────────────
-function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel) {
+function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel, mousePos) {
   if (!canvas || !structures) return;
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
@@ -34,6 +34,55 @@ function drawPhantom(canvas, structures, probe, hoveredId, selectedId, vessel) {
     }
     ctx.restore();
   });
+
+  // ── Inline hover tooltip drawn at mouse position ──────────────────────────
+  if (hoveredId && mousePos) {
+    const hovS = structures.find(s => s.id === hoveredId);
+    if (hovS) {
+      const lines = [
+        hovS.label,
+        `Z = ${(hovS.acoustic_impedance / 1e6).toFixed(3)} MRayl`,
+        `α = ${hovS.attenuation_db_cm} dB/cm/MHz`,
+        `c = ${hovS.speed_of_sound} m/s`,
+      ];
+      const PAD = 8, LINE_H = 14, TIP_W = 160, TIP_H = PAD * 2 + lines.length * LINE_H;
+      // Keep tooltip inside canvas bounds
+      let tx = mousePos.x + 14, ty = mousePos.y - TIP_H / 2;
+      if (tx + TIP_W > W - 4) tx = mousePos.x - TIP_W - 14;
+      if (ty < 4) ty = 4;
+      if (ty + TIP_H > H - 4) ty = H - TIP_H - 4;
+
+      // Shadow + background
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
+      ctx.fillStyle = "rgba(5,12,28,0.92)";
+      ctx.beginPath();
+      ctx.roundRect(tx, ty, TIP_W, TIP_H, 5);
+      ctx.fill();
+      ctx.restore();
+
+      // Border
+      ctx.strokeStyle = "#00d4ff55"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(tx, ty, TIP_W, TIP_H, 5); ctx.stroke();
+
+      // Text
+      ctx.textAlign = "left";
+      lines.forEach((line, i) => {
+        const ly = ty + PAD + i * LINE_H + 10;
+        if (i === 0) {
+          ctx.font = "bold 10px monospace"; ctx.fillStyle = "#ffffff";
+        } else {
+          ctx.font = "9px monospace"; ctx.fillStyle = "#7dc8e8";
+        }
+        ctx.fillText(line, tx + PAD, ly);
+      });
+
+      // Tiny connector dot
+      ctx.beginPath(); ctx.arc(mousePos.x, mousePos.y, 3, 0, 2 * Math.PI);
+      ctx.fillStyle = "#00d4ff"; ctx.shadowColor = "#00d4ff"; ctx.shadowBlur = 6;
+      ctx.fill(); ctx.shadowBlur = 0;
+    }
+  }
 
   // Blood vessel — drawn as an animated tube
   if (vessel) {
@@ -171,7 +220,7 @@ function drawBmode(canvas, data) {
     ctx.fillStyle = "rgba(90,133,170,0.35)"; ctx.font = "10px monospace"; ctx.textAlign = "center";
     ctx.fillText("Click  ▶ B-mode Scan  to build image", W / 2, H / 2); ctx.textAlign = "left"; return;
   }
-  const { lines } = data;
+  const { lines, x_range, probe_x } = data;
   const numLines = lines.length;
   const lineW = W / numLines;
   const imgData = ctx.createImageData(W, H);
@@ -183,13 +232,30 @@ function drawBmode(canvas, data) {
       const py = Math.round(si / line.echo.length * H);
       const brightness = Math.round(Math.min(255, Math.abs(v) / maxE * 255 * 3));
       const lw = Math.ceil(lineW);
-      for (let dx = 0; dx < lw; dx++) {
-        const idx = (py * W + Math.min(px + dx, W - 1)) * 4;
-        if (idx + 3 < d.length) { d[idx] = brightness; d[idx + 1] = brightness; d[idx + 2] = brightness; d[idx + 3] = 220; }
+      for (let dx2 = 0; dx2 < lw; dx2++) {
+        const idx2 = (py * W + Math.min(px + dx2, W - 1)) * 4;
+        if (idx2 + 3 < d.length) { d[idx2] = brightness; d[idx2+1] = brightness; d[idx2+2] = brightness; d[idx2+3] = 220; }
       }
     });
   });
   ctx.putImageData(imgData, 0, 0);
+
+  // Probe-centre marker
+  if (x_range && probe_x !== undefined) {
+    const xSpan = x_range[1] - x_range[0];
+    const centreX = ((probe_x - x_range[0]) / xSpan) * W;
+    ctx.strokeStyle = "rgba(0,212,255,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(centreX, 0); ctx.lineTo(centreX, H * 0.12); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#00d4ff"; ctx.font = "8px monospace"; ctx.textAlign = "center";
+    ctx.fillText(`probe @${probe_x.toFixed(1)}cm`, centreX, 22);
+
+    // X axis labels
+    ctx.fillStyle = "rgba(90,133,170,0.45)"; ctx.font = "7px monospace";
+    ctx.fillText(`${x_range[0].toFixed(1)}`, 2, H - 3);
+    ctx.fillText(`${x_range[1].toFixed(1)} cm`, W - 34, H - 3);
+  }
+
   ctx.fillStyle = "rgba(90,133,170,0.5)"; ctx.font = "9px monospace"; ctx.textAlign = "left";
   ctx.fillText("B-MODE  lateral scan image", 8, 14);
 }
@@ -286,6 +352,7 @@ export default function UltrasoundPage() {
   const [editForm,    setEditForm]    = useState({});
   const [vessel,      setVessel]      = useState({ cx: 1.5, cy: 2, angle: 30, velocity: 60 });
   const [scanning,    setScanning]    = useState(false);
+  const [mousePos,    setMousePos]    = useState(null);
 
   const phantomRef = useRef(null);
   const amodeRef   = useRef(null);
@@ -334,8 +401,8 @@ export default function UltrasoundPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  useEffect(() => { resizeCanvas(phantomRef); drawPhantom(phantomRef.current, structures, probe, hoveredId, selectedId, vessel); },
-    [structures, probe, hoveredId, selectedId, vessel]);
+  useEffect(() => { resizeCanvas(phantomRef); drawPhantom(phantomRef.current, structures, probe, hoveredId, selectedId, vessel, mousePos); },
+    [structures, probe, hoveredId, selectedId, vessel, mousePos]);
   useEffect(() => { resizeCanvas(amodeRef); drawAmode(amodeRef.current, amodeData); }, [amodeData]);
   useEffect(() => { resizeCanvas(bmodeRef); drawBmode(bmodeRef.current, bmodeData); }, [bmodeData]);
   useEffect(() => { resizeCanvas(dopplerRef); drawDoppler(dopplerRef.current, dopplerData); }, [dopplerData]);
@@ -357,7 +424,15 @@ export default function UltrasoundPage() {
     }
     return null;
   };
-  const onPhantomHover = e => { const c = phantomCoords(e); if (!c) return; setHoveredId(hitTest(c.nx, c.ny)?.id || null); };
+  const onPhantomHover = e => {
+    const c = phantomRef.current; if (!c) return;
+    const rect = c.getBoundingClientRect();
+    const canvasX = (e.clientX - rect.left) * (c.width / rect.width);
+    const canvasY = (e.clientY - rect.top) * (c.height / rect.height);
+    setMousePos({ x: canvasX, y: canvasY });
+    const coords = phantomCoords(e); if (!coords) return;
+    setHoveredId(hitTest(coords.nx, coords.ny)?.id || null);
+  };
   const onPhantomClick = e => {
     const c = phantomCoords(e); if (!c) return;
     const hit = hitTest(c.nx, c.ny);
@@ -374,7 +449,7 @@ export default function UltrasoundPage() {
   const bmodeScan = async () => {
     setScanning(true);
     const { probe_x, probe_y, angle } = probeToScanParams();
-    const data = await api.bmodeScam({ probe_x, probe_y, angle, frequency_mhz: freqMhz, num_lines: 80 });
+    const data = await api.bmodeScam({ probe_x, probe_y, angle, frequency_mhz: freqMhz, num_lines: 80, fan_width: 7 });
     setBmodeData(data); setScanning(false);
   };
 
@@ -496,21 +571,7 @@ export default function UltrasoundPage() {
             </div>
           </div>
 
-          {/* Hover info */}
-          {hoveredId && !selectedS && (() => {
-            const s = structures.find(x => x.id === hoveredId); if (!s) return null;
-            return (
-              <div className="panel-section">
-                <div className="panel-title">Structure Info</div>
-                <div className="info-card">
-                  <div className="info-row"><span>Label</span><strong>{s.label}</strong></div>
-                  <div className="info-row"><span>Z (MRayl)</span><strong>{(s.acoustic_impedance / 1e6).toFixed(3)}</strong></div>
-                  <div className="info-row"><span>α (dB/cm/MHz)</span><strong>{s.attenuation_db_cm}</strong></div>
-                  <div className="info-row"><span>c (m/s)</span><strong>{s.speed_of_sound}</strong></div>
-                </div>
-              </div>
-            );
-          })()}
+          {/* Hover info is now shown as an inline tooltip directly on the phantom canvas */}
 
           {/* Edit selected */}
           {selectedS && (
@@ -551,7 +612,7 @@ export default function UltrasoundPage() {
               <span style={{ fontSize: 9, color: "var(--text3)", fontFamily: "var(--font-mono)" }}>hover·click to edit</span>
             </div>
             <div className="viz-body" style={{ position: "relative", overflow: "hidden", cursor: hoveredId ? "pointer" : "default" }}
-              onMouseMove={onPhantomHover} onMouseLeave={() => setHoveredId(null)} onClick={onPhantomClick}>
+              onMouseMove={onPhantomHover} onMouseLeave={() => { setHoveredId(null); setMousePos(null); }} onClick={onPhantomClick}>
               <canvas ref={phantomRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
             </div>
           </div>

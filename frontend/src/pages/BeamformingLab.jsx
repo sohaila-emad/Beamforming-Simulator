@@ -358,13 +358,23 @@ function Slider({label,value,min,max,step=1,fmt,onChange}){
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function BeamformingLab() {
-  const [params,  setParams]  = useState(DEFAULT_P);
+export default function BeamformingLab({ params: externalParams, onParamsChange }) {
+  // If App passes saved params, seed state with them; else use DEFAULT_P
+  const [params,  setParamsLocal] = useState(externalParams || DEFAULT_P);
   const [ifData,  setIfData]  = useState(null);
   const [ifPos,   setIfPos]   = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [ifDirty, setIfDirty] = useState(false);
+
+  // Wrap setter so App always knows the current params
+  const setParams = useCallback((updater) => {
+    setParamsLocal(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      onParamsChange?.(next);
+      return next;
+    });
+  }, [onParamsChange]);
 
   const c1=useRef(null), c2=useRef(null), c3=useRef(null), c4=useRef(null), wg=useRef(null);
   const pRef=useRef(params), ifRef=useRef({data:null,pos:null});
@@ -431,6 +441,12 @@ export default function BeamformingLab() {
       <div style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",display:"flex",
         gap:10,alignItems:"center",flexShrink:0,background:"var(--panel)"}}>
         <span style={{fontFamily:"var(--font-mono)",fontSize:10,color:"var(--accent)",letterSpacing:2}}>BEAMFORMING LAB</span>
+        <div style={{width:1,height:16,background:"var(--border2)"}}/>
+        <button className="btn" style={{opacity:0.7}}
+          title="Reset to default parameters"
+          onClick={()=>{ setParams(DEFAULT_P); setIfData(null); setIfPos(null); }}>
+          ↺ Default
+        </button>
         <div style={{width:1,height:16,background:"var(--border2)"}}/>
         {Object.keys(PRESETS).map(name=>(
           <button key={name} className="btn" onClick={()=>setParams(p=>({...p,...PRESETS[name]}))}>

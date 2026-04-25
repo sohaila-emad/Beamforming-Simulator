@@ -254,3 +254,89 @@ canvas, .js-plotly-plot { width: 100% !important; height: 100% !important; }
 .flex-1 { flex: 1; }
 .mt4 { margin-top: 4px; }
 .mt8 { margin-top: 8px; }
+
+/* ── Tab dropdown (settings memory) ── */
+.tab-wrapper {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tab-chevron {
+  margin-left: 4px;
+  font-size: 9px;
+  opacity: 0.6;
+  vertical-align: middle;
+}
+
+.tab-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 220px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius2);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,212,255,0.08);
+  z-index: 500;
+  overflow: hidden;
+  animation: dropIn 0.15s ease;
+}
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.tab-dropdown-title {
+  padding: 8px 14px 6px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text3);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-dropdown-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+  border-bottom: 1px solid var(--border);
+}
+.tab-dropdown-item:last-child { border-bottom: none; }
+.tab-dropdown-item:hover { background: rgba(0,212,255,0.06); }
+
+.tdi-icon {
+  font-size: 16px;
+  color: var(--accent);
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.tdi-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.tdi-text strong {
+  font-size: 12px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text);
+}
+.tdi-text small {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text3);
+}
